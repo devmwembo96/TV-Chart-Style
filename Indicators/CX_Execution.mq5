@@ -15,7 +15,7 @@
 //| TradingView.                                                     |
 //+------------------------------------------------------------------+
 #property copyright   "Portage de CX Écran 2 · Exécution (TradingFinder, LuxAlgo, JPT, fadi)"
-#property version     "1.00"
+#property version     "1.01"
 #property description "CX Exécution : structure, liquidité, EQH/EQL, IMFVG, LDZ, FVG Sessions et ICT HTF FVGs, au rendu TradingView."
 #property indicator_chart_window
 #property indicator_buffers 0
@@ -371,7 +371,8 @@ public:
    datetime T[]; double O[], H[], L[], C[]; double atr[];
    int      n;
    bool     ok;
-   bool Load(datetime from)
+   //--- need : heure de la première bougie du graphique, que ces données doivent couvrir
+   bool Load(datetime from, datetime need)
      {
       MqlRates r[];
       int k = CopyRates(_Symbol, tf, from, TimeCurrent() + PeriodSeconds(tf), r);
@@ -390,6 +391,13 @@ public:
          atr[i] = prev;
         }
       ok = true;
+      //--- historique encore en téléchargement : le terminal n'a que les bougies récentes
+      if(T[0] > need)
+        {
+         datetime first = (datetime)SeriesInfoInteger(_Symbol, tf, SERIES_FIRSTDATE);
+         if(first == 0 || first < need)
+            return false;
+        }
       return true;
      }
    //--- bougie contenant t (dernière dont l'ouverture est <= t)
@@ -429,6 +437,7 @@ string   gName;
 bool     gCvOk = false;
 int      gW = 0, gHh = 0;
 uint     gLastRender = 0, gLastWork = 0;
+bool     gDirty = false;
 
 //+------------------------------------------------------------------+
 bool             HtfShow(int k) { return k == 0 ? htf1_show : k == 1 ? htf2_show : k == 2 ? htf3_show : k == 3 ? htf4_show : k == 4 ? htf5_show : htf6_show; }
@@ -461,11 +470,13 @@ int OnInit()
    gD1.tf = PERIOD_D1;
    gMN1.tf = PERIOD_MN1;
    gProcessed = -1;
+   EventSetMillisecondTimer(100);
    return INIT_SUCCEEDED;
   }
 
 void OnDeinit(const int reason)
   {
+   EventKillTimer();
    if(gCvOk) gCv.Destroy();
    gCvOk = false;
    ChartRedraw();
@@ -1400,10 +1411,10 @@ bool LoadHtf()
    bool ok = true;
    for(int k = 0; k < 6; k++)
       if(HtfShow(k) && (!ltf_hide || gPer < PeriodSeconds(HtfTf(k))))
-         ok = gHtf[k].Load(from - 40 * PeriodSeconds(HtfTf(k))) && ok;
-   ok = gD1.Load(from - 60 * 86400) && ok;
+         ok = gHtf[k].Load(from - 40 * PeriodSeconds(HtfTf(k)), from) && ok;
+   ok = gD1.Load(from - 60 * 86400, from) && ok;
    if(gPer >= PeriodSeconds(PERIOD_D1))
-      ok = gMN1.Load(from - 40 * 31 * 86400) && ok;
+      ok = gMN1.Load(from - 40 * 31 * 86400, from) && ok;
    return ok;
   }
 
@@ -1414,7 +1425,7 @@ int OnCalculate(const int rates_total, const int prev_calculated, const datetime
    if(rates_total < 100)
       return 0;
    gPer = PeriodSeconds(PERIOD_CURRENT);
-   bool full = prev_calculated == 0 || gProcessed < 0 || rates_total < gTotal || rates_total - gTotal > 1;
+   bool full = prev_calculated == 0 || gProcessed == -1 || rates_total < gTotal || rates_total - gTotal > 1;
    if(full)
      {
       gBase = MathMax(0, rates_total - InpMaxBars);
@@ -1427,10 +1438,12 @@ int OnCalculate(const int rates_total, const int prev_calculated, const datetime
          gBuy[i] = 0; gSell[i] = 0;
         }
       Atr(gATR14, ldz_atrLen, 0); Atr(gATR55, 55, 0); Atr(gATR200, 200, 0);
+      gTotal = rates_total;
       if(!LoadHtf())
         {
-         gProcessed = -1;              // unités supérieures pas encore chargées : on recommence au tick suivant
-         return 0;
+         gProcessed = -2;              // unités supérieures en téléchargement : la minuterie recommence
+         if(gCvOk) { gCv.Erase(0); gCv.Update(true); }   // pas de dessin périmé en attendant
+         return rates_total;
         }
       gCommit.Reset((double)gT[0]);
       gProcessed = 0;
@@ -1447,6 +1460,11 @@ int OnCalculate(const int rates_total, const int prev_calculated, const datetime
          if(i > from) { gBuy[i] = 0; gSell[i] = 0; }
         }
       Atr(gATR14, ldz_atrLen, from); Atr(gATR55, 55, from); Atr(gATR200, 200, from);
+      if(gProcessed == -2)
+        {
+         gTotal = rates_total;
+         return rates_total;           // calcul complet en attente des données (OnTimer)
+        }
       if(gN - 1 > gProcessed)
          LoadHtf();                    // nouvelle bougie : bougies supérieures clôturées à jour
      }
@@ -1473,8 +1491,32 @@ int OnCalculate(const int rates_total, const int prev_calculated, const datetime
 
 void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
   {
-   if(id == CHARTEVENT_CHART_CHANGE && gN > 0 && gProcessed >= 0)
+   if(id != CHARTEVENT_CHART_CHANGE || gN <= 0 || gProcessed < 0)
+      return;
+   gDirty = true;
+   if(GetTickCount() - gLastRender >= 40)
+      Render(gWork);               // sinon la minuterie redessine (défilement rapide)
+  }
+
+//--- Données des unités supérieures arrivées après le premier calcul (week-end, premier lancement) :
+//    calcul complet sans attendre un tick.
+void OnTimer()
+  {
+   if(gDirty && gProcessed >= 0)
       Render(gWork);
+   static uint lastTry = 0;
+   if(gProcessed != -2 || gN < 100 || GetTickCount() - lastTry < 1000)
+      return;
+   lastTry = GetTickCount();
+   if(!LoadHtf())
+      return;
+   gCommit.Reset((double)gT[0]);
+   for(gProcessed = 0; gProcessed < gN - 1; gProcessed++)
+      ProcessBar(gCommit, gProcessed, true);
+   gWork.CopyFrom(gCommit);
+   ProcessBar(gWork, gN - 1, false);
+   gLastWork = GetTickCount();
+   Render(gWork);
   }
 
 //+------------------------------------------------------------------+
@@ -1500,20 +1542,21 @@ double XofTime(double tm)
   }
 double Xof(double x, bool xt) { return xt ? XofTime(x) : XofBar(x); }
 
+//--- mélange « par-dessus » en entiers : les grandes zones se redessinent vite au défilement
 void BlendPx(int x, int y, uint c, double cov)
   {
    if(x < 0 || y < 0 || x >= gW || y >= gHh) return;
-   double sa = ((c >> 24) & 0xFF) / 255.0 * cov;
-   if(sa <= 0.0) return;
+   uint sa = (uint)(((c >> 24) & 0xFF) * (cov >= 1.0 ? 1.0 : cov));
+   if(sa == 0) return;
    uint d = gCv.PixelGet(x, y);
-   double da = ((d >> 24) & 0xFF) / 255.0;
-   double oa = sa + da * (1.0 - sa);
-   if(oa <= 0.0) return;
-   double k = da * (1.0 - sa);
-   uint r = (uint)MathRound((((c >> 16) & 0xFF) * sa + ((d >> 16) & 0xFF) * k) / oa);
-   uint g = (uint)MathRound((((c >> 8) & 0xFF) * sa + ((d >> 8) & 0xFF) * k) / oa);
-   uint b = (uint)MathRound(((c & 0xFF) * sa + (d & 0xFF) * k) / oa);
-   gCv.PixelSet(x, y, ((uint)MathRound(oa * 255.0) << 24) | (r << 16) | (g << 8) | b);
+   uint da = (d >> 24) & 0xFF;
+   if(sa >= 255 || da == 0) { gCv.PixelSet(x, y, (sa << 24) | (c & 0xFFFFFF)); return; }
+   uint k  = da * (255 - sa) / 255;
+   uint oa = sa + k;
+   uint r = ((((c >> 16) & 0xFF) * sa) + (((d >> 16) & 0xFF) * k)) / oa;
+   uint g = ((((c >> 8) & 0xFF) * sa) + (((d >> 8) & 0xFF) * k)) / oa;
+   uint b = (((c & 0xFF) * sa) + ((d & 0xFF) * k)) / oa;
+   gCv.PixelSet(x, y, (oa << 24) | (r << 16) | (g << 8) | b);
   }
 
 void FillRect(int x1, int y1, int x2, int y2, uint c)
@@ -1734,5 +1777,7 @@ void Render(CState &S)
         }
      }
    gCv.Update(true);
+   gLastRender = GetTickCount();
+   gDirty = false;
   }
 //+------------------------------------------------------------------+
