@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//| CarnetXAU.mq5 — version 2.15.0                                   |
+//| CarnetXAU.mq5 — version 2.16.0                                   |
 //|                                                                  |
 //| 1. Envoie au Carnet XAU les trades fermés, le solde, l'équité,   |
 //|    la perte du jour et les bougies du courtier (D1 à M1), toutes |
@@ -51,6 +51,9 @@
 //| Plan et signaux dessinés en CCanvas (2.15), comme l'indicateur    |
 //| LGD+CSD+Fib : zones vert achat / rouge vente, texte à la taille   |
 //| des blocs BB, étiquettes pleines ; tableau du Calculateur XAU.    |
+//| 2.16 : départ des niveaux et zones sur leur bougie d'origine     |
+//| (champ « origin » du plan, heure du serveur), sinon sur la mèche |
+//| H1 qui marque le prix (côté selon le type H / L), sinon au bord. |
 //|                                                                  |
 //| Règles du signal (calculées à partir du plan de Claude) :        |
 //| - le prix touche une zone de Claude non cassée ;                 |
@@ -79,7 +82,7 @@
 //|   non touchée dans ce sens.                                      |
 //+------------------------------------------------------------------+
 #property copyright "Carnet XAU"
-#property version   "2.15"
+#property version   "2.16"
 #property description "Plan de Claude sur le graphique, signaux d'exécution (signal seulement) et synchronisation du Carnet XAU."
 
 #include <Canvas\Canvas.mqh>
@@ -115,9 +118,10 @@ struct CxZone
    bool   buy;
    int    strength;
    string state;     // vierge, testee, cassee
+   string origin;    // bougie d'origine « jj/mm hh:mm », heure du serveur (vide : carnet d'avant 2.15)
    datetime lastSignal;
   };
-struct CxLevel { double price; string type; };
+struct CxLevel { double price; string type; string origin; };
 //--- Scénario d'exécution de la dernière analyse de séance (outil position longue / courte).
 struct CxPos { bool buy; double entry; double sl; double tp; string label; };
 CxPos    g_pos[];
@@ -848,6 +852,7 @@ void FetchPlan()
          g_zones[k].buy      = (f[6] != "vente");
          g_zones[k].strength = (int)StringToInteger(f[7]);
          g_zones[k].state    = f[8];
+         g_zones[k].origin   = c >= 10 ? f[9] : "";
          g_zones[k].lastSignal = 0;
          for(int j = 0; j < oz; j++)
             if(oldKeys[j] == f[1])
@@ -859,6 +864,7 @@ void FetchPlan()
          ArrayResize(g_levels, k + 1);
          g_levels[k].price = StringToDouble(f[1]);
          g_levels[k].type  = f[2];
+         g_levels[k].origin = c >= 4 ? f[3] : "";
         }
       else if(f[0] == "X" && c >= 2)
          g_sinv = StringToDouble(f[1]);
@@ -1004,16 +1010,6 @@ string LevelName(string t)
    return u;
   }
 
-//--- Bougie d'origine : la dernière (hors bougie en cours) qui touche le prix ou la zone.
-datetime OriginTime(double lo, double hi)
-  {
-   int n = (int)MathMin(600, Bars(_Symbol, PERIOD_CURRENT) - 1);
-   for(int i = 2; i < n; i++)
-      if(iLow(_Symbol, PERIOD_CURRENT, i) <= hi + 0.15 && iHigh(_Symbol, PERIOD_CURRENT, i) >= lo - 0.15)
-         return iTime(_Symbol, PERIOD_CURRENT, i);
-   return iTime(_Symbol, PERIOD_CURRENT, MathMax(1, n - 1));
-  }
-
 //+------------------------------------------------------------------+
 //| Plan dessiné en CCanvas, comme l'indicateur LGD+CSD+Fib :        |
 //| vraie transparence, traits de 1 px, texte Trebuchet MS, prix du  |
@@ -1096,14 +1092,113 @@ void PriceTag(string name, double price, color clr)
    CvAdd(CV_PRICE, 0, 0, price, 0, Ar(clr, 1.0), 0, STYLE_SOLID, ANCHOR_CENTER, Fr(price, 2));
   }
 
-//--- Bougie d'origine d'un niveau ou d'une zone, fixée une fois pour toutes (par plan et unité de
-//    temps) : la dernière bougie dont la mèche marque le prix (le plus haut pour un niveau au-dessus du
-//    prix, le plus bas en dessous ; un bord pour une zone). Sinon, la dernière bougie qui le touche.
+//--- Bougie d'origine d'un niveau ou d'une zone, calculée une fois par plan et par unité de temps :
+//    1. « origin » du plan (jj/mm hh:mm, heure du serveur), affinée dans l'unité affichée : la bougie
+//       de cette période dont la mèche marque le prix ;
+//    2. sinon la dernière bougie H1 (6 semaines) dont le plus haut (niveau H, haut, high) ou le plus
+//       bas (niveau L, bas, low) marque le prix à 0,30 $ près, affinée de même ;
+//    3. sinon le bord gauche du graphique : jamais une bougie prise au hasard.
 string   g_orgKey[];
 datetime g_orgT[];
 string   g_orgHash = "";
+#define  ORG_TOL 0.30
 
-datetime Origin(string key, double lo, double hi)
+//--- 1 : plus hauts, -1 : plus bas, 0 : les deux (zone, type inconnu).
+int TypeSide(string type)
+  {
+   string u = type;
+   StringToUpper(u);
+   int n = StringLen(u);
+   if(n == 0)
+      return 0;
+   if(StringFind(u, "HAUT") >= 0 || StringFind(u, "HIGH") >= 0 || StringSubstr(u, n - 1) == "H")
+      return 1;
+   if(StringFind(u, "BAS") >= 0 || StringFind(u, "LOW") >= 0 || StringSubstr(u, n - 1) == "L")
+      return -1;
+   return 0;
+  }
+
+//--- « 16/10 08:00 », « jeudi 16/10, 08h00 », « 22/10 » : premier jour/mois et première heure du texte.
+datetime ParseOrigin(string txt, bool &hasHour)
+  {
+   hasHour = false;
+   int n = StringLen(txt), d = -1, mo = -1, hh = 0, mi = 0;
+   for(int i = 0; i + 2 < n && d < 0; i++)
+     {
+      int j = i;
+      string a = "", b = "";
+      while(j < n && StringGetCharacter(txt, j) >= '0' && StringGetCharacter(txt, j) <= '9' && StringLen(a) < 2) { a += StringSubstr(txt, j, 1); j++; }
+      if(a == "" || j >= n || StringGetCharacter(txt, j) != '/')
+         continue;
+      j++;
+      while(j < n && StringGetCharacter(txt, j) >= '0' && StringGetCharacter(txt, j) <= '9' && StringLen(b) < 2) { b += StringSubstr(txt, j, 1); j++; }
+      if(b == "")
+         continue;
+      d = (int)StringToInteger(a);
+      mo = (int)StringToInteger(b);
+      //--- heure après la date : chiffres, « : » ou « h », deux chiffres
+      for(int k = j; k + 2 < n; k++)
+        {
+         string c = "";
+         int m = k;
+         while(m < n && StringGetCharacter(txt, m) >= '0' && StringGetCharacter(txt, m) <= '9' && StringLen(c) < 2) { c += StringSubstr(txt, m, 1); m++; }
+         if(c == "" || m + 2 > n)
+            continue;
+         ushort sep = StringGetCharacter(txt, m);
+         if(sep != ':' && sep != 'h')
+            continue;
+         string e = StringSubstr(txt, m + 1, 2);
+         if(StringLen(e) == 2 && StringGetCharacter(e, 0) >= '0' && StringGetCharacter(e, 0) <= '9' && StringGetCharacter(e, 1) >= '0' && StringGetCharacter(e, 1) <= '9')
+           {
+            hh = (int)StringToInteger(c);
+            mi = (int)StringToInteger(e);
+            hasHour = true;
+           }
+         break;
+        }
+     }
+   if(d < 1 || d > 31 || mo < 1 || mo > 12)
+      return 0;
+   MqlDateTime now;
+   TimeToStruct(TimeCurrent(), now);
+   MqlDateTime o;
+   o.year = now.year; o.mon = mo; o.day = d; o.hour = hh; o.min = mi; o.sec = 0;
+   datetime t = StructToTime(o);
+   if(t > TimeCurrent() + 86400)                 // plan de fin décembre lu en janvier
+     {
+      o.year--;
+      t = StructToTime(o);
+     }
+   return t;
+  }
+
+//--- Dans [from, from + span[, sur l'unité affichée : la bougie dont la mèche marque le prix.
+datetime Refine(datetime from, int span, double lo, double hi, int side)
+  {
+   int first = iBarShift(_Symbol, PERIOD_CURRENT, from, false);
+   if(first < 0)
+      return 0;
+   datetime best = iTime(_Symbol, PERIOD_CURRENT, first);
+   double   gap  = DBL_MAX;
+   for(int i = first; i >= 0; i--)
+     {
+      datetime t = iTime(_Symbol, PERIOD_CURRENT, i);
+      if(t >= from + span)
+         break;
+      if(t + PeriodSeconds(PERIOD_CURRENT) <= from)
+         continue;
+      double h = iHigh(_Symbol, PERIOD_CURRENT, i), l = iLow(_Symbol, PERIOD_CURRENT, i);
+      double g = side > 0 ? MathAbs(h - hi) : (side < 0 ? MathAbs(l - lo) : MathMin(MathAbs(h - hi), MathAbs(l - lo)));
+      if(g < gap)
+        {
+         gap  = g;
+         best = t;
+        }
+     }
+   return best;
+  }
+
+datetime Origin(string key, double lo, double hi, int side, string origin, int span)
   {
    if(g_orgHash != g_hash + "|" + IntegerToString(PeriodSeconds(PERIOD_CURRENT)))
      {
@@ -1115,26 +1210,50 @@ datetime Origin(string key, double lo, double hi)
    for(int i = 0; i < ArraySize(g_orgKey); i++)
       if(g_orgKey[i] == key)
          return g_orgT[i];
-   double tol = 0.15, bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   bool   zone = hi - lo > tol;
-   int    n = (int)MathMin(5000, Bars(_Symbol, PERIOD_CURRENT) - 1);
    datetime t = 0;
-   for(int i = 1; i < n && t == 0; i++)
-     {
-      double h = iHigh(_Symbol, PERIOD_CURRENT, i), l = iLow(_Symbol, PERIOD_CURRENT, i);
-      bool hit = zone ? (MathAbs(h - hi) <= tol || MathAbs(l - lo) <= tol)
-                      : (lo >= bid ? MathAbs(h - hi) <= tol : MathAbs(l - lo) <= tol);
-      if(hit)
-         t = iTime(_Symbol, PERIOD_CURRENT, i);
-     }
+   //--- 1. Bougie d'origine du plan.
+   bool hasHour = false;
+   datetime o = ParseOrigin(origin, hasHour);
+   if(o > 0 && o <= TimeCurrent())
+      t = Refine(o, hasHour ? MathMax(span, PeriodSeconds(PERIOD_CURRENT)) : 86400, lo, hi, side);
+   //--- 2. Dernière bougie H1 dont la mèche marque le prix.
    if(t == 0)
-      t = OriginTime(lo, hi);
+     {
+      int n = (int)MathMin(1000, Bars(_Symbol, PERIOD_H1) - 1);
+      for(int i = 1; i < n && t == 0; i++)
+        {
+         double h = iHigh(_Symbol, PERIOD_H1, i), l = iLow(_Symbol, PERIOD_H1, i);
+         bool hit = side > 0 ? MathAbs(h - hi) <= ORG_TOL
+                  : side < 0 ? MathAbs(l - lo) <= ORG_TOL
+                             : (MathAbs(h - hi) <= ORG_TOL || MathAbs(l - lo) <= ORG_TOL);
+         if(hit)
+            t = Refine(iTime(_Symbol, PERIOD_H1, i), 3600, lo, hi, side);
+        }
+     }
+   //--- 3. Bord gauche : la plus ancienne bougie chargée.
+   if(t == 0)
+      t = iTime(_Symbol, PERIOD_CURRENT, Bars(_Symbol, PERIOD_CURRENT) - 1);
    int k = ArraySize(g_orgKey);
    ArrayResize(g_orgKey, k + 1);
    ArrayResize(g_orgT, k + 1);
    g_orgKey[k] = key;
    g_orgT[k]   = t;
    return t;
+  }
+
+//--- Durée d'une bougie de l'unité d'une zone (H1, H4, M15, D…), en secondes ; 1 h par défaut.
+int TfSeconds(string tf)
+  {
+   string u = tf;
+   StringToUpper(u);
+   if(u == "M1")  return 60;
+   if(u == "M5")  return 300;
+   if(u == "M15") return 900;
+   if(u == "M30") return 1800;
+   if(u == "H4")  return 14400;
+   if(u == "D" || u == "D1") return 86400;
+   if(u == "W" || u == "W1") return 7 * 86400;
+   return 3600;
   }
 
 //--- Place libre pour un texte de largeur w centré en x, à la hauteur y (pixels) ; réservée si libre.
@@ -1333,7 +1452,7 @@ void DrawPlan()
       StringToUpper(up);
       //--- Comme les blocs BB de LGD+CSD+Fib : vert achat, rouge vente, fond à 25 %, bord plein, nom au centre.
       color  base = z.buy ? C'8,153,129' : C'242,54,69';
-      datetime t1 = Origin("Z" + z.key, z.lo, z.hi);
+      datetime t1 = Origin("Z" + z.key, z.lo, z.hi, 0, z.origin, TfSeconds(z.tf));
       CvAdd(CV_RECT, t1, RightTime(), z.lo, z.hi, Ar(base, 0.25), Ar(base, 1.0), STYLE_SOLID, 0, up);
       //--- Nom au centre de la partie visible du bloc : sa place est réservée avant celle des niveaux.
       int W = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
@@ -1345,14 +1464,14 @@ void DrawPlan()
    if(inv > 0)
      {
       color clr = g_invalidated && g_sinv <= 0 ? C'178,181,190' : C'242,54,69';
-      NamedLine(PFX_PLAN + "INV", Origin("INV", inv, inv), inv, g_invalidated && g_sinv <= 0 ? "INVALIDATION TOUCHÉE" : "INVALIDATION", clr, STYLE_SOLID);
+      NamedLine(PFX_PLAN + "INV", Origin("INV", inv, inv, inv >= SymbolInfoDouble(_Symbol, SYMBOL_BID) ? 1 : -1, "", 3600), inv, g_invalidated && g_sinv <= 0 ? "INVALIDATION TOUCHÉE" : "INVALIDATION", clr, STYLE_SOLID);
       PriceTag("", inv, clr);
      }
    //--- Niveaux de liquidité : trait plein et fin, nom au milieu, prix coloré au bord droit.
    for(int i = 0; i < ArraySize(g_levels); i++)
      {
       color  clr = LevelColor(g_levels[i].type);
-      NamedLine("", Origin(g_levels[i].type, g_levels[i].price, g_levels[i].price), g_levels[i].price, LevelName(g_levels[i].type), clr, STYLE_SOLID);
+      NamedLine("", Origin(g_levels[i].type, g_levels[i].price, g_levels[i].price, TypeSide(g_levels[i].type), g_levels[i].origin, 3600), g_levels[i].price, LevelName(g_levels[i].type), clr, STYLE_SOLID);
       PriceTag("", g_levels[i].price, clr);
      }
    //--- Plus haut et plus bas des zones au bord droit, après l'invalidation et les niveaux.
