@@ -6,7 +6,7 @@
 //| retrouver la transparence et les étiquettes de TradingView.      |
 //+------------------------------------------------------------------+
 #property copyright   "MPL 2.0 — portage de l'indicateur TradingView LGD+CSD+Fib"
-#property version     "1.02"
+#property version     "1.03"
 #property description "Liquidity Grab, CSD & Focused Fibonacci (LGD+CSD+Fib), affichage au style TradingView."
 #property indicator_chart_window
 #property indicator_buffers 0
@@ -34,6 +34,10 @@ input color           bullColor    = C'8,153,129';       // Bullish Color
 input color           bearColor    = C'242,54,69';       // Bearish Color
 input color           levelColor   = C'120,123,134';     // Level Color
 
+input group "Alertes (à la clôture de la bougie)"
+input bool            AlCsd   = true;    // Alerte à chaque CSD
+input bool            AlPopup = true;    // Fenêtre et son MT5
+input bool            AlPush  = true;    // Notification mobile (MetaQuotes ID)
 input group "MT5"
 input int             InpMaxBars   = 5000;       // Bougies calculées
 input string          InpFont      = "Trebuchet MS"; // Police (celle de TradingView)
@@ -83,6 +87,15 @@ template<typename T> void DropFirst(T &arr[], int k)
    for(int i = k; i < n; i++)
       arr[i - k] = arr[i];
    ArrayResize(arr, n - k, 256);
+  }
+
+//--- Alertes : collectées pendant le calcul d'une bougie clôturée en direct
+bool   gAlertLive = false;
+string gAlertBuf  = "";
+void   Ev(string msg)
+  {
+   if(!AlCsd || !gAlertLive || StringFind(gAlertBuf, msg) >= 0) return;
+   gAlertBuf += (gAlertBuf == "" ? "" : " · ") + msg;
   }
 
 uint Argb(const color c, const int transp)
@@ -415,6 +428,7 @@ bool ProcessBar(CState &S, int t)
            {
             S.NewLabel(g, p.grabPrice, LB_DOT, 0, Argb(dirColor, 0), LS_CENTER, SZ_SMALL);
             S.NewLabel(t, p.isBull ? gL[t] : gH[t], LB_CSD, Argb(dirColor, 0), 0, p.isBull ? LS_UP : LS_DOWN, SZ_TINY);
+            Ev(p.isBull ? "CSD haussier (liquidité " + DoubleToString(p.grabPrice, _Digits) + " prise)" : "CSD baissier (liquidité " + DoubleToString(p.grabPrice, _Digits) + " prise)");
            }
          for(int k = g; k <= t; k++)
            {
@@ -503,6 +517,7 @@ bool ProcessBar(CState &S, int t)
                   color oppColor = z.isBull ? bearColor : bullColor;
                   S.NewLabel(z.grabBar, z.grabPrice, LB_DOT, 0, Argb(dirColor, 0), LS_CENTER, SZ_SMALL);
                   S.NewLabel(z.csdBar, z.isBull ? gL[z.csdBar] : gH[z.csdBar], LB_CSD, Argb(dirColor, 0), 0, z.isBull ? LS_UP : LS_DOWN, SZ_TINY);
+                  Ev((z.isBull ? "Entrée OTE achat " : "Entrée OTE vente ") + DoubleToString(gC[t], _Digits) + ", SL " + DoubleToString(z.grabPrice, _Digits));
                   S.NewLine(t, gC[t], t + 10, gC[t], Argb(dirColor, 0), 2, ST_SOLID);
                   S.NewLabel(t + 10, gC[t], LB_ENTRY, 0, Argb(dirColor, 0), LS_NONE, SZ_SMALL);
                   S.NewLine(t, z.grabPrice, t + 10, z.grabPrice, Argb(oppColor, 0), 2, ST_DASHED);
@@ -556,7 +571,18 @@ int OnCalculate(const int rates_total, const int prev_calculated, const datetime
    bool newBar = false;
    while(gProcessed < rates_total - 1)
      {
-      if(!ProcessBar(gCommit, gProcessed))
+      //--- alertes seulement pour les bougies qui clôturent en direct, pas pour l'historique
+      gAlertLive = !full && gProcessed >= rates_total - 3;
+      gAlertBuf = "";
+      bool okBar = ProcessBar(gCommit, gProcessed);
+      gAlertLive = false;
+      if(okBar && gAlertBuf != "")
+        {
+         string txt = "LGD+CSD+Fib " + _Symbol + " " + TimeToString(gT[gProcessed], TIME_MINUTES) + " : " + gAlertBuf;
+         if(AlPopup) Alert(txt);
+         if(AlPush)  SendNotification(StringSubstr(txt, 0, 255));
+        }
+      if(!okBar)
         {
          gProcessed = -1;   // données HTF pas prêtes : on recommence au prochain tick
          return 0;

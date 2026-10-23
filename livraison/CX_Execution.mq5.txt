@@ -15,7 +15,7 @@
 //| TradingView.                                                     |
 //+------------------------------------------------------------------+
 #property copyright   "Portage de CX Écran 2 · Exécution (TradingFinder, LuxAlgo, JPT, fadi)"
-#property version     "1.01"
+#property version     "1.02"
 #property description "CX Exécution : structure, liquidité, EQH/EQL, IMFVG, LDZ, FVG Sessions et ICT HTF FVGs, au rendu TradingView."
 #property indicator_chart_window
 #property indicator_buffers 0
@@ -155,6 +155,16 @@ input int    label_transp   = 10;             // Label transparency
 input ENUM_TSIZE label_size = small;          // Label size
 input int    padding        = 4;              // Distance from current candle
 input int    buffer_sp      = 6;              // Spacing between timeframes
+input group "Alertes (à la clôture de la bougie)"
+input bool   AlPopup     = true;   // Fenêtre et son MT5
+input bool   AlPush      = true;   // Notification mobile (MetaQuotes ID)
+input bool   AlHtfNew    = true;   // ICT HTF : nouveau FVG
+input bool   AlHtfTouch  = true;   // ICT HTF : prix entre dans un FVG affiché
+input bool   AlHtfMitig  = true;   // ICT HTF : FVG affiché comblé
+input bool   AlSweep     = true;   // LDZ : BSL / SSL SWEEP
+input bool   AlReversal  = true;   // LDZ : signal BUY / SELL
+input bool   AlEqual     = true;   // EQH / EQL
+input bool   AlFvgSess   = true;   // FVG Sessions : nouveau, comblé, prix dedans, moyenne croisée
 input group "MT5"
 input int    InpMaxBars = 5000;               // Bougies calculées (TradingView : 5 000)
 input string InpFont    = "Trebuchet MS";     // Police (celle de TradingView)
@@ -181,6 +191,18 @@ enum ENUM_LBLSTYLE { LS_DOWN = 0, LS_UP = 1, LS_LEFT = 2 };
 enum ENUM_TRI { TR_NA = -1, TR_FALSE = 0, TR_TRUE = 1 };
 enum ENUM_TREND { TREND_NO = 0, TREND_UP = 1, TREND_DOWN = 2 };
 
+//--- Alertes : collectées pendant le calcul d'une bougie clôturée en direct, envoyées ensemble
+bool   gAlertLive = false;
+string gAlertBuf  = "";
+int    gCurBar    = 0;
+string Px2(double p) { return DoubleToString(p, _Digits); }
+void   Ev(bool on, string msg)
+  {
+   if(!on || !gAlertLive) return;
+   if(StringFind(gAlertBuf, msg) >= 0) return;
+   gAlertBuf += (gAlertBuf == "" ? "" : " · ") + msg;
+  }
+
 uint A(const color c, const int transp)
   {
    return ColorToARGB(c, (uchar)MathRound(255.0 * (100 - MathMax(0, MathMin(100, transp))) / 100.0));
@@ -191,7 +213,7 @@ struct DLine  { double x1; double y1; double x2; double y2; uint clr; int style;
 struct DBox   { double x1; double top; double x2; double bot; uint bg; uint bd; int bw; bool xt; bool ext; bool alive; };
 struct DLabel { double x; double y; string text; uint bg; uint tc; int style; int size; bool xt; bool sym; bool alive; };
 //--- Imbalance de l'ICT HTF FVGs
-struct SImb   { double open_time; double open; double middle; double close; bool mitigated; double mit_time; int line; int lbl; int box; };
+struct SImb   { double open_time; double open; double middle; double close; bool mitigated; double mit_time; int line; int lbl; int box; bool touched; int born; };
 
 template<typename T> void Push(T &a[], const T &v) { int n = ArraySize(a); ArrayResize(a, n + 1, 64); a[n] = v; }
 template<typename T> void PushV(T &a[], T v) { int n = ArraySize(a); ArrayResize(a, n + 1, 64); a[n] = v; }
@@ -1038,6 +1060,7 @@ void EqualHL(CState &S, int t)
          if(modeInput == Present) { S.LineDel(S.eqL_line); S.LabelDel(S.eqL_lbl); }
          S.eqL_line = S.LineNew(S.eqL_time, S.eqL_cur, (double)gT[t - size], lvl, A(bullC, 0), dot, true);
          S.eqL_lbl  = S.LabelNew((int)MathRound(0.5 * (S.eqL_idx + t - size)), lvl, "EQL", 0, A(bullC, 0), LS_UP, eqSizeInput, false, false);
+         Ev(AlEqual, "EQL " + Px2(lvl));
         }
       S.eqL_last = S.eqL_cur; S.eqL_cur = lvl; S.eqL_time = (double)gT[t - size]; S.eqL_idx = t - size;
      }
@@ -1049,6 +1072,7 @@ void EqualHL(CState &S, int t)
          if(modeInput == Present) { S.LineDel(S.eqH_line); S.LabelDel(S.eqH_lbl); }
          S.eqH_line = S.LineNew(S.eqH_time, S.eqH_cur, (double)gT[t - size], lvl, A(bearC, 0), dot, true);
          S.eqH_lbl  = S.LabelNew((int)MathRound(0.5 * (S.eqH_idx + t - size)), lvl, "EQH", 0, A(bearC, 0), LS_DOWN, eqSizeInput, false, false);
+         Ev(AlEqual, "EQH " + Px2(lvl));
         }
       S.eqH_last = S.eqH_cur; S.eqH_cur = lvl; S.eqH_time = (double)gT[t - size]; S.eqH_idx = t - size;
      }
@@ -1131,6 +1155,7 @@ void Ldz(CState &S, int t)
       if(gH[t] > top && gC[t] < level)
         {
          bearSweep = true; S.bslActive[i] = false;
+         Ev(AlSweep, "BSL SWEEP " + Px2(level));
          S.boxes[z].ext = false; S.boxes[z].x2 = t; S.boxes[z].bg = A(PC_ORANGE, 82); S.boxes[z].bd = A(PC_ORANGE, 0);
          if(ldz_showSweeps) S.LabelNew(t, gH[t], "BSL SWEEP", A(PC_ORANGE, 0), A(PC_WHITE, 0), LS_DOWN, small, false, false);
         }
@@ -1149,6 +1174,7 @@ void Ldz(CState &S, int t)
       if(gL[t] < btm && gC[t] > level)
         {
          bullSweep = true; S.sslActive[i] = false;
+         Ev(AlSweep, "SSL SWEEP " + Px2(level));
          S.boxes[z].ext = false; S.boxes[z].x2 = t; S.boxes[z].bg = A(PC_AQUA, 82); S.boxes[z].bd = A(PC_AQUA, 0);
          if(ldz_showSweeps) S.LabelNew(t, gL[t], "SSL SWEEP", A(PC_AQUA, 0), A(PC_BLACK, 0), LS_UP, small, false, false);
         }
@@ -1161,6 +1187,8 @@ void Ldz(CState &S, int t)
 //--- 7-8. Reversal signals (plotshape)
    bool buy  = bullSweep && (!ldz_requireCandleColor || gC[t] > gO[t]);
    bool sell = bearSweep && (!ldz_requireCandleColor || gC[t] < gO[t]);
+   if(buy)  Ev(AlReversal, "BUY (retournement LDZ) " + Px2(gC[t]));
+   if(sell) Ev(AlReversal, "SELL (retournement LDZ) " + Px2(gC[t]));
    gBuy[t]  = (char)(ldz_showReversals && buy);
    gSell[t] = (char)(ldz_showReversals && sell);
   }
@@ -1208,23 +1236,35 @@ void FvgSessions(CState &S, int t)
      {
       S.fs_top = gL[t]; S.fs_btm = gH[t - 2]; S.fs_mitigated = TR_FALSE; S.fs_isnew = false; S.fs_isbull = TR_TRUE;
       FsSetFvg(S, t, 2, A(fs_bullCss, fs_bullAreaT), A(fs_bullCss, 0));
+      Ev(AlFvgSess, "FVG de séance haussier " + Px2(S.fs_btm) + "-" + Px2(S.fs_top));
      }
    else if(bear_fvg && S.fs_isnew)
      {
       S.fs_top = gL[t - 2]; S.fs_btm = gH[t]; S.fs_mitigated = TR_FALSE; S.fs_isnew = false; S.fs_isbull = TR_FALSE;
       FsSetFvg(S, t, 2, A(fs_bearCss, fs_bearAreaT), A(fs_bearCss, 0));
+      Ev(AlFvgSess, "FVG de séance baissier " + Px2(S.fs_btm) + "-" + Px2(S.fs_top));
      }
    if(S.fs_mitigated == TR_FALSE)
      {
       if(S.fs_isbull == TR_TRUE && gC[t] < S.fs_btm)
-        { FsSetFvg(S, t, 1, A(fs_bullCss, fs_bullMitT), A(fs_bullCss, 0)); S.fs_mitigated = TR_TRUE; }
+        { FsSetFvg(S, t, 1, A(fs_bullCss, fs_bullMitT), A(fs_bullCss, 0)); S.fs_mitigated = TR_TRUE; Ev(AlFvgSess, "FVG de séance haussier comblé"); }
       else if(S.fs_isbull != TR_TRUE && gC[t] > S.fs_top)
-        { FsSetFvg(S, t, 1, A(fs_bearCss, fs_bearMitT), A(fs_bearCss, 0)); S.fs_mitigated = TR_TRUE; }
+        { FsSetFvg(S, t, 1, A(fs_bearCss, fs_bearMitT), A(fs_bearCss, 0)); S.fs_mitigated = TR_TRUE; Ev(AlFvgSess, "FVG de séance baissier comblé"); }
      }
    if(!S.fs_isnew)
      {
       if(S.LOk(S.fs_lvl)) S.lines[S.fs_lvl].x2 = t;
       if(S.BOk(S.fs_area)) S.boxes[S.fs_area].x2 = t;
+      //--- alertes du Pine : prix dans le FVG (à l'entrée), moyenne croisée
+      if(t > 0 && S.fs_top != NA && S.fs_btm != NA)
+        {
+         bool inNow = gC[t] >= S.fs_btm && gC[t] <= S.fs_top, inPrev = gC[t - 1] >= S.fs_btm && gC[t - 1] <= S.fs_top;
+         string side = S.fs_isbull == TR_TRUE ? "haussier" : "baissier";
+         if(inNow && !inPrev) Ev(AlFvgSess, "Prix dans le FVG de séance " + side);
+         double avg = (S.fs_top + S.fs_btm) / 2;
+         if((gC[t] > avg && gC[t - 1] <= avg) || (gC[t] < avg && gC[t - 1] >= avg))
+            Ev(AlFvgSess, "Moyenne du FVG de séance " + side + " croisée " + Px2(avg));
+        }
      }
   }
 
@@ -1286,7 +1326,7 @@ void AddImbalance(CState &S, SImb &arr[], double o, double c, double ot)
   {
    SImb m;
    m.open_time = ot; m.open = o; m.middle = (o + c) / 2; m.close = c; m.mitigated = false; m.mit_time = 0;
-   m.line = -1; m.lbl = -1; m.box = -1;
+   m.line = -1; m.lbl = -1; m.box = -1; m.touched = false; m.born = gCurBar;
    InsertImb(arr, m);
    if(ArraySize(arr) > 100)
      {
@@ -1296,7 +1336,7 @@ void AddImbalance(CState &S, SImb &arr[], double o, double c, double ot)
      }
   }
 
-void CheckMitigated(CState &S, SImb &arr[], int t)
+void CheckMitigated(CState &S, SImb &arr[], int t, int k)
   {
    for(int i = ArraySize(arr) - 1; i >= 0; i--)
      {
@@ -1310,6 +1350,8 @@ void CheckMitigated(CState &S, SImb &arr[], int t)
       arr[i].mitigated = mit;
       if(mit)
         {
+         if(S.BOk(arr[i].box))
+            Ev(AlHtfMitig, "FVG " + HtfText(HtfTf(k)) + (o < c ? " haussier" : " baissier") + " comblé " + Px2(MathMin(o, c)) + "-" + Px2(MathMax(o, c)));
          if(!mitigated_show) { ImbDelete(S, arr[i]); RemoveAt(arr, i); }
          else arr[i].mit_time = (double)gT[t];
         }
@@ -1368,12 +1410,27 @@ int ProcessHtf(CState &S, SImb &arr[], int k, int t)
                double o = hh < l2 ? l2 : h2;
                double c = hh < l2 ? hh : ll;
                if(ArraySize(arr) == 0 || arr[0].open_time < t2)
+                 {
                   AddImbalance(S, arr, o, c, t2);
+                  Ev(AlHtfNew, "Nouveau FVG " + HtfText(HtfTf(k)) + (o < c ? " haussier " : " baissier ") + Px2(MathMin(o, c)) + "-" + Px2(MathMax(o, c)));
+                 }
               }
            }
          S.vis[k] = 1;
         }
-      CheckMitigated(S, arr, t);
+      CheckMitigated(S, arr, t, k);
+      //--- prix qui entre dans un FVG affiché (une fois par FVG)
+      for(int i = 0; i < ArraySize(arr); i++)
+        {
+         if(arr[i].touched || arr[i].mitigated || arr[i].born >= t) continue;
+         double lo = MathMin(arr[i].open, arr[i].close), hi = MathMax(arr[i].open, arr[i].close);
+         if(gL[t] <= hi && gH[t] >= lo)
+           {
+            arr[i].touched = true;
+            if(S.BOk(arr[i].box))
+               Ev(AlHtfTouch, "Prix dans le FVG " + HtfText(HtfTf(k)) + (arr[i].open < arr[i].close ? " haussier " : " baissier ") + Px2(lo) + "-" + Px2(hi));
+           }
+        }
      }
    return S.vis[k];
   }
@@ -1395,6 +1452,7 @@ void IctHtf(CState &S, int t)
 void ProcessBar(CState &S, int t, bool confirmed)
   {
    gBuy[t] = 0; gSell[t] = 0;
+   gCurBar = t;
    Smc(S, t);
    Llf(S, t);
    EqualHL(S, t);
@@ -1472,7 +1530,13 @@ int OnCalculate(const int rates_total, const int prev_calculated, const datetime
    bool newBar = false;
    while(gProcessed < gN - 1)
      {
+      //--- alertes seulement pour les bougies qui clôturent en direct, pas pour l'historique
+      gAlertLive = !full && gProcessed >= gN - 3;
+      gAlertBuf = "";
       ProcessBar(gCommit, gProcessed, true);
+      gAlertLive = false;
+      if(gAlertBuf != "")
+         SendAlert(gAlertBuf, gT[gProcessed]);
       gProcessed++;
       newBar = true;
      }
@@ -1487,6 +1551,15 @@ int OnCalculate(const int rates_total, const int prev_calculated, const datetime
       gLastRender = now;
      }
    return rates_total;
+  }
+
+void SendAlert(string msg, datetime bar)
+  {
+   string tf = gPer < 3600 ? "M" + IntegerToString(gPer / 60) : gPer < 86400 ? "H" + IntegerToString(gPer / 3600)
+               : gPer == 86400 ? "D1" : gPer == 604800 ? "W1" : "MN1";
+   string txt = "CX Exécution " + _Symbol + " " + tf + " " + TimeToString(bar, TIME_MINUTES) + " : " + msg;
+   if(AlPopup) Alert(txt);
+   if(AlPush)  SendNotification(StringSubstr(txt, 0, 255));
   }
 
 void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
