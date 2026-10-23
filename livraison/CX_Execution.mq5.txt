@@ -15,7 +15,7 @@
 //| TradingView.                                                     |
 //+------------------------------------------------------------------+
 #property copyright   "Portage de CX Écran 2 · Exécution (TradingFinder, LuxAlgo, JPT, fadi)"
-#property version     "1.02"
+#property version     "1.03"
 #property description "CX Exécution : structure, liquidité, EQH/EQL, IMFVG, LDZ, FVG Sessions et ICT HTF FVGs, au rendu TradingView."
 #property indicator_chart_window
 #property indicator_buffers 0
@@ -161,6 +161,7 @@ input bool   AlPush      = true;   // Notification mobile (MetaQuotes ID)
 input bool   AlHtfNew    = true;   // ICT HTF : nouveau FVG
 input bool   AlHtfTouch  = true;   // ICT HTF : prix entre dans un FVG affiché
 input bool   AlHtfMitig  = true;   // ICT HTF : FVG affiché comblé
+input bool   AlZone      = true;   // LDZ : nouvelle zone BSL / SSL
 input bool   AlSweep     = true;   // LDZ : BSL / SSL SWEEP
 input bool   AlReversal  = true;   // LDZ : signal BUY / SELL
 input bool   AlEqual     = true;   // EQH / EQL
@@ -1123,7 +1124,8 @@ void Ldz(CState &S, int t)
      {
       double level = gH[t - L], th = AtrLdz(t - L) * ldz_zoneAtrMult;
       int z = S.BoxNew(t - L, level + th, t, level - th, ldz_showZones ? A(PC_RED, 88) : A(PC_RED, 100), ldz_showZones ? A(PC_RED, 0) : A(PC_RED, 100), 1, false, ldz_extendZones);
-      PushV(S.bslBox, z); PushV(S.bslPrice, level); bool act = true; PushV(S.bslActive, act);
+      PushV(S.bslBox, z);
+      Ev(AlZone, "Nouvelle BSL " + Px2(level)); PushV(S.bslPrice, level); bool act = true; PushV(S.bslActive, act);
       if(ldz_showLabels) S.LabelNew(t - L, level + th, "BSL", A(PC_RED, 0), A(PC_WHITE, 0), LS_DOWN, tiny, false, false);
       if(ArraySize(S.bslBox) > ldz_maxZones)
         {
@@ -1136,7 +1138,8 @@ void Ldz(CState &S, int t)
      {
       double level = gL[t - L], th = AtrLdz(t - L) * ldz_zoneAtrMult;
       int z = S.BoxNew(t - L, level + th, t, level - th, ldz_showZones ? A(PC_LIME, 88) : A(PC_LIME, 100), ldz_showZones ? A(PC_LIME, 0) : A(PC_LIME, 100), 1, false, ldz_extendZones);
-      PushV(S.sslBox, z); PushV(S.sslPrice, level); bool act = true; PushV(S.sslActive, act);
+      PushV(S.sslBox, z);
+      Ev(AlZone, "Nouvelle SSL " + Px2(level)); PushV(S.sslPrice, level); bool act = true; PushV(S.sslActive, act);
       if(ldz_showLabels) S.LabelNew(t - L, level - th, "SSL", A(PC_GREEN, 0), A(PC_WHITE, 0), LS_UP, tiny, false, false);
       if(ArraySize(S.sslBox) > ldz_maxZones)
         {
