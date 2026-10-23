@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//| CarnetXAU.mq5 — version 2.14.0                                   |
+//| CarnetXAU.mq5 — version 2.15.0                                   |
 //|                                                                  |
 //| 1. Envoie au Carnet XAU les trades fermés, le solde, l'équité,   |
 //|    la perte du jour et les bougies du courtier (D1 à M1), toutes |
@@ -48,6 +48,8 @@
 //| Affichage façon TradingView : police Trebuchet MS, couleurs      |
 //| semi-transparentes sur le fond du graphique, et mise à l'échelle |
 //| de l'écran (Windows à 125 % ou 150 %) : le texte ne déborde plus.|
+//| Le plan est dessiné en CCanvas (2.15) : vraie transparence des    |
+//| zones, traits de 1 px, étiquettes pleines aux prix du bord droit. |
 //|                                                                  |
 //| Règles du signal (calculées à partir du plan de Claude) :        |
 //| - le prix touche une zone de Claude non cassée ;                 |
@@ -76,8 +78,10 @@
 //|   non touchée dans ce sens.                                      |
 //+------------------------------------------------------------------+
 #property copyright "Carnet XAU"
-#property version   "2.14"
+#property version   "2.15"
 #property description "Plan de Claude sur le graphique, signaux d'exécution (signal seulement) et synchronisation du Carnet XAU."
+
+#include <Canvas\Canvas.mqh>
 
 input string InpUrl         = "https://revnefty.store/wp-json/carnet-xau/v1/mt5"; // Adresse du carnet
 input string InpKey         = "";    // Clé MT5 du compte (onglet Comptes)
@@ -181,11 +185,15 @@ int      g_signalCount = 0;
 //--- Police de TradingView sous Windows ; Arial pour les symboles ▲ ▼ ○ ↔, absents de Trebuchet MS.
 #define FONT_TV  "Trebuchet MS"
 #define FONT_TVB "Trebuchet MS Bold"
-#define TAG_PT   8                 // taille des noms de lignes et des étiquettes des positions (points)
 //--- Échelle de l'écran : Windows à 125 % ou 150 % agrandit le texte (en points) mais pas les
 //    distances (en pixels) ; elles sont multipliées par DPI / 96 pour que rien ne se chevauche.
 double   g_k = 1.0;
 int      Dp(double px) { return (int)MathRound(px * g_k); }
+//--- Canvas du plan (dessiné dans DrawPlan, redessiné par CvRender).
+CCanvas  g_cvs;
+bool     g_cvsOk = false;
+string   g_cvsName = "";
+int      g_cvW = 0, g_cvH = 0;
 
 //--- Largeur réelle d'un texte en Trebuchet MS, en pixels, à l'échelle de l'écran.
 int TextPx(string txt, int pt, bool bold)
@@ -244,6 +252,9 @@ void OnDeinit(const int reason)
    GlobalVariableDel(Bridge("cx_on"));   // le Calculateur sait que le carnet n'est plus relié
    if(reason == REASON_REMOVE)
       RestoreStyle();
+   if(g_cvsOk)
+      g_cvs.Destroy();
+   g_cvsOk = false;
    ObjectsDeleteAll(0, PFX_PLAN);
    ObjectsDeleteAll(0, PFX_UI);
   }
@@ -272,13 +283,24 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       return;
    long s = ChartGetInteger(0, CHART_SCALE), f = ChartGetInteger(0, CHART_FIRST_VISIBLE_BAR), w = ChartGetInteger(0, CHART_WIDTH_IN_BARS);
    if(s == scale && f == first && w == width)
+     {
+      CvRender();               // échelle des prix déplacée : le canvas suit
       return;
+     }
    scale = s; first = f; width = w;
    DrawPlan();
   }
 
 void OnTick()
   {
+   //--- Échelle automatique des prix : le canvas du plan suit le graphique.
+   static double pmx = 0, pmn = 0;
+   double mx = ChartGetDouble(0, CHART_PRICE_MAX, 0), mn = ChartGetDouble(0, CHART_PRICE_MIN, 0);
+   if(g_cvsOk && (mx != pmx || mn != pmn))
+     {
+      pmx = mx; pmn = mn;
+      CvRender();
+     }
    datetime m1 = iTime(_Symbol, PERIOD_M1, 0);
    if(m1 == g_lastM1)
       return;
@@ -1025,6 +1047,50 @@ datetime OriginTime(double lo, double hi)
    return iTime(_Symbol, PERIOD_CURRENT, MathMax(1, n - 1));
   }
 
+//+------------------------------------------------------------------+
+//| Plan dessiné en CCanvas, comme l'indicateur LGD+CSD+Fib :        |
+//| vraie transparence, traits de 1 px, texte Trebuchet MS, prix du  |
+//| bord droit en étiquettes pleines comme l'échelle de TradingView. |
+//| DrawPlan() calcule la mise en page ; CvRender() redessine à      |
+//| chaque défilement, zoom ou changement d'échelle des prix.        |
+//+------------------------------------------------------------------+
+enum ENUM_CV_KIND { CV_RECT = 0, CV_SEG = 1, CV_TEXT = 2, CV_PRICE = 3, CV_TREND = 4 };
+struct CvItem
+  {
+   int      kind;
+   datetime t1;
+   datetime t2;
+   double   p1;
+   double   p2;
+   uint     c1;        // remplissage, trait ou texte
+   uint     c2;        // bord du rectangle, fond de l'étiquette (0 : aucun)
+   int      style;     // STYLE_SOLID, STYLE_DASH, STYLE_DOT
+   int      anchor;    // ANCHOR_CENTER, ANCHOR_LOWER (au-dessus du prix), ANCHOR_UPPER (en dessous)
+   string   text;
+  };
+CvItem   g_cv[];
+#define  CV_FONT_PT 7                // texte des noms et des étiquettes (points)
+
+uint Ar(color c, double a) { return ColorToARGB(c, (uchar)MathRound(255.0 * MathMax(0.0, MathMin(1.0, a)))); }
+
+void CvAdd(int kind, datetime t1, datetime t2, double p1, double p2, uint c1, uint c2, int style, int anchor, string text)
+  {
+   int n = ArraySize(g_cv);
+   ArrayResize(g_cv, n + 1, 64);
+   g_cv[n].kind = kind; g_cv[n].t1 = t1; g_cv[n].t2 = t2; g_cv[n].p1 = p1; g_cv[n].p2 = p2;
+   g_cv[n].c1 = c1; g_cv[n].c2 = c2; g_cv[n].style = style; g_cv[n].anchor = anchor; g_cv[n].text = text;
+  }
+
+//--- Largeur du texte du canvas, en pixels.
+int CvTextPx(string txt)
+  {
+   uint w = 0, h = 0;
+   TextSetFont(FONT_TV, -CV_FONT_PT * 10, FW_NORMAL);
+   if(!TextGetSize(txt, w, h) || w == 0)
+      return (int)(StringLen(txt) * CV_FONT_PT * 0.8 * g_k);
+   return (int)w;
+  }
+
 int BarPx()           { return (int)MathPow(2, (double)ChartGetInteger(0, CHART_SCALE)); }
 datetime FutureTime(double bars) { return iTime(_Symbol, PERIOD_CURRENT, 0) + (datetime)(bars * PeriodSeconds(PERIOD_CURRENT)); }
 
@@ -1035,29 +1101,6 @@ datetime RightTime()
    int first = (int)ChartGetInteger(0, CHART_FIRST_VISIBLE_BAR);
    double fut = vis - first - 1 - Dp(80) / (double)BarPx();
    return FutureTime(MathMax(31, fut));
-  }
-
-void Seg(string name, datetime t1, datetime t2, double price, color clr, ENUM_LINE_STYLE style, bool ray)
-  {
-   ObjectCreate(0, name, OBJ_TREND, 0, t1, price, t2, price);
-   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
-   ObjectSetInteger(0, name, OBJPROP_STYLE, style);
-   ObjectSetInteger(0, name, OBJPROP_WIDTH, 1);
-   ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, ray);
-   ObjectSetInteger(0, name, OBJPROP_BACK, true);
-   ObjBase(name);
-  }
-
-//--- Texte centré en petites capitales, comme les étiquettes des outils de TradingView.
-void Tag(string name, datetime t, double price, string txt, color clr, ENUM_ANCHOR_POINT anchor)
-  {
-   ObjectCreate(0, name, OBJ_TEXT, 0, t, price);
-   ObjectSetString(0, name, OBJPROP_TEXT, txt);
-   ObjectSetString(0, name, OBJPROP_FONT, FONT_TVB);
-   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, TAG_PT);
-   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
-   ObjectSetInteger(0, name, OBJPROP_ANCHOR, anchor);
-   ObjBase(name);
   }
 
 //--- Places déjà prises sur le graphique (en pixels), remises à zéro à chaque dessin : deux prix ou deux
@@ -1073,20 +1116,17 @@ int PriceY(double price)
   }
 
 //--- Prix sur fond de couleur au bord droit, comme l'échelle de TradingView ; omis s'il recouvrirait un
-//    prix déjà affiché (moins de 13 pixels à l'échelle de l'écran).
+//    prix déjà affiché.
 void PriceTag(string name, double price, color clr)
   {
    int y = PriceY(price);
    for(int i = 0; i < ArraySize(g_tagY); i++)
-      if(MathAbs(g_tagY[i] - y) < Dp(13))
+      if(MathAbs(g_tagY[i] - y) < Dp(15))
          return;
    int n = ArraySize(g_tagY);
    ArrayResize(g_tagY, n + 1);
    g_tagY[n] = y;
-   ObjectCreate(0, name, OBJ_ARROW_RIGHT_PRICE, 0, RightTime(), price);
-   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
-   ObjectSetInteger(0, name, OBJPROP_WIDTH, 1);
-   ObjBase(name);
+   CvAdd(CV_PRICE, 0, 0, price, 0, Ar(clr, 1.0), 0, STYLE_SOLID, ANCHOR_CENTER, Fr(price, 2));
   }
 
 //--- Ligne de l'origine au bord droit, nom au milieu, trait interrompu sous le texte.
@@ -1099,7 +1139,7 @@ void NamedLine(string id, datetime t1, double price, string txt, color clr, ENUM
       sh = vis;
    t1 = iTime(_Symbol, PERIOD_CURRENT, sh);
    datetime tEnd = RightTime();
-   int w = TextPx(txt, TAG_PT, true) + Dp(10), g = (int)MathCeil(w / (double)BarPx() / 2.0);
+   int w = CvTextPx(txt) + Dp(10), g = (int)MathCeil(w / (double)BarPx() / 2.0);
    //--- Nom au milieu du trait, sinon au quart, aux trois quarts… : la première place libre.
    double fr[] = { 0.5, 0.25, 0.75, 0.12, 0.88 };
    int y = PriceY(price), m = sh / 2;
@@ -1128,17 +1168,18 @@ void NamedLine(string id, datetime t1, double price, string txt, color clr, ENUM
    datetime tm = iTime(_Symbol, PERIOD_CURRENT, m);
    if(sh - m > g + 1 && m - g > 0)
      {
-      Seg(id + "a", t1, iTime(_Symbol, PERIOD_CURRENT, m + g), price, clr, style, false);
-      Seg(id + "b", iTime(_Symbol, PERIOD_CURRENT, m - g), tEnd, price, clr, style, false);
+      CvAdd(CV_SEG, t1, iTime(_Symbol, PERIOD_CURRENT, m + g), price, price, Ar(clr, 1.0), 0, style, 0, "");
+      CvAdd(CV_SEG, iTime(_Symbol, PERIOD_CURRENT, m - g), tEnd, price, price, Ar(clr, 1.0), 0, style, 0, "");
      }
    else
-      Seg(id + "a", t1, tEnd, price, clr, style, false);
-   Tag(id + "t", tm, price, txt, clr, ANCHOR_CENTER);
+      CvAdd(CV_SEG, t1, tEnd, price, price, Ar(clr, 1.0), 0, style, 0, "");
+   CvAdd(CV_TEXT, tm, 0, price, 0, Ar(clr, 1.0), 0, STYLE_SOLID, ANCHOR_CENTER, txt);
   }
 
 void DrawPlan()
   {
-   ObjectsDeleteAll(0, PFX_PLAN);
+   ObjectsDeleteAll(0, PFX_PLAN);    // objets des versions précédentes
+   ArrayResize(g_cv, 0);
    ArrayResize(g_tagY, 0);
    ArrayResize(g_lblX, 0);
    ArrayResize(g_lblY, 0);
@@ -1155,36 +1196,31 @@ void DrawPlan()
    for(int k = 0; k < np; k++)
      {
       CxPos  p   = g_pos[k];
-      string id  = PFX_PLAN + "P" + IntegerToString(k);
       double stop = MathAbs(p.entry - p.sl);
       if(stop <= 0)
          continue;
       datetime xa = FutureTime(3 + k * (len + 4)), xb = FutureTime(3 + k * (len + 4) + len), xm = xa + (xb - xa) / 2;
-      Rect(id + "tp", xa, p.entry, xb, p.tp, Blend(ChartBg(), C'8,153,129', 0.20), "Objectif " + Fr(p.tp, 2));
-      Rect(id + "sl", xa, p.entry, xb, p.sl, Blend(ChartBg(), C'242,54,69', 0.20), "Stop " + Fr(p.sl, 2));
-      Seg(id + "e", xa, xb, p.entry, C'120,123,134', STYLE_SOLID, false);
+      //--- Outil position de TradingView : zones vert et rouge à 20 %, étiquettes pleines.
+      CvAdd(CV_RECT, xa, xb, p.entry, p.tp, Ar(C'8,153,129', 0.20), 0, STYLE_SOLID, 0, "");
+      CvAdd(CV_RECT, xa, xb, p.entry, p.sl, Ar(C'242,54,69', 0.20), 0, STYLE_SOLID, 0, "");
+      CvAdd(CV_SEG, xa, xb, p.entry, p.entry, Ar(C'120,123,134', 1.0), 0, STYLE_SOLID, 0, "");
       bool up = p.tp > p.entry;
       double rr = MathAbs(p.tp - p.entry) / stop;
-      Tag(id + "tt", xm, p.tp, "Objectif " + Fr(p.tp, 2) + " · " + Fr(rr, 1) + "R", C'8,153,129', up ? ANCHOR_LOWER : ANCHOR_UPPER);
-      Tag(id + "st", xm, p.sl, "Stop " + Fr(p.sl, 2) + " · " + Fr(stop, 2) + " $", C'242,54,69', up ? ANCHOR_UPPER : ANCHOR_LOWER);
-      Tag(id + "et", xm, p.entry, (p.buy ? "Achat " : "Vente ") + Fr(p.entry, 2) + (p.label != "" ? " · " + p.label : ""), C'19,23,34', up ? ANCHOR_UPPER : ANCHOR_LOWER);
+      CvAdd(CV_TEXT, xm, 0, p.tp, 0, Ar(clrWhite, 1.0), Ar(C'8,153,129', 1.0), STYLE_SOLID, up ? ANCHOR_LOWER : ANCHOR_UPPER,
+            "Objectif " + Fr(p.tp, 2) + " · " + Fr(rr, 1) + "R");
+      CvAdd(CV_TEXT, xm, 0, p.sl, 0, Ar(clrWhite, 1.0), Ar(C'242,54,69', 1.0), STYLE_SOLID, up ? ANCHOR_UPPER : ANCHOR_LOWER,
+            "Stop " + Fr(p.sl, 2) + " · " + Fr(stop, 2) + " $");
+      CvAdd(CV_TEXT, xm, 0, p.entry, 0, Ar(clrWhite, 1.0), Ar(C'120,123,134', 1.0), STYLE_SOLID, up ? ANCHOR_UPPER : ANCHOR_LOWER,
+            (p.buy ? "Achat " : "Vente ") + Fr(p.entry, 2) + (p.label != "" ? " · " + p.label : ""));
       if(k == 0)
         {
          datetime t0 = iTime(_Symbol, PERIOD_CURRENT, 0);
          double   c0 = iClose(_Symbol, PERIOD_CURRENT, 0);
-         ObjectCreate(0, id + "w1", OBJ_TREND, 0, t0, c0, xa + 2 * per, p.entry);
-         ObjectCreate(0, id + "w2", OBJ_TREND, 0, xa + 2 * per, p.entry, xb - 3 * per, p.tp);
-         for(int w = 1; w <= 2; w++)
-           {
-            string nm = id + "w" + IntegerToString(w);
-            ObjectSetInteger(0, nm, OBJPROP_COLOR, C'41,98,255');
-            ObjectSetInteger(0, nm, OBJPROP_STYLE, STYLE_DASH);
-            ObjectSetInteger(0, nm, OBJPROP_RAY_RIGHT, false);
-            ObjBase(nm);
-           }
-         PriceTag(id + "pe", p.entry, C'120,123,134');
-         PriceTag(id + "pt", p.tp, C'8,153,129');
-         PriceTag(id + "ps", p.sl, C'242,54,69');
+         CvAdd(CV_TREND, t0, xa + 2 * per, c0, p.entry, Ar(C'41,98,255', 1.0), 0, STYLE_DASH, 0, "");
+         CvAdd(CV_TREND, xa + 2 * per, xb - 3 * per, p.entry, p.tp, Ar(C'41,98,255', 1.0), 0, STYLE_DASH, 0, "");
+         PriceTag("", p.entry, C'120,123,134');
+         PriceTag("", p.tp, C'8,153,129');
+         PriceTag("", p.sl, C'242,54,69');
         }
      }
    //--- Invalidation : celle de la dernière analyse de séance, sinon celle du plan de la semaine.
@@ -1193,19 +1229,19 @@ void DrawPlan()
      {
       color clr = g_invalidated && g_sinv <= 0 ? C'178,181,190' : C'242,54,69';
       NamedLine(PFX_PLAN + "INV", OriginTime(inv, inv), inv, g_invalidated && g_sinv <= 0 ? "INVALIDATION TOUCHÉE" : "INVALIDATION", clr, STYLE_SOLID);
-      PriceTag(PFX_PLAN + "INVp", inv, clr);
+      PriceTag("", inv, clr);
      }
    //--- Niveaux de liquidité : trait plein et fin, nom au milieu, prix coloré au bord droit.
    for(int i = 0; i < ArraySize(g_levels); i++)
      {
       color  clr = LevelColor(g_levels[i].type);
-      string id  = PFX_PLAN + "L" + IntegerToString(i);
-      NamedLine(id, OriginTime(g_levels[i].price, g_levels[i].price), g_levels[i].price, LevelName(g_levels[i].type), clr, STYLE_SOLID);
-      PriceTag(id + "p", g_levels[i].price, clr);
+      NamedLine("", OriginTime(g_levels[i].price, g_levels[i].price), g_levels[i].price, LevelName(g_levels[i].type), clr, STYLE_SOLID);
+      PriceTag("", g_levels[i].price, clr);
      }
    //--- Zones encore valides (une zone cassée n'est plus tracée, comme sur la capture du carnet) :
-   //    rectangle plein de l'origine vers la droite, ligne médiane en tirets avec le nom, plus haut et
-   //    plus bas au bord droit (ocre pour un order block, bleu achat, rouge vente).
+   //    rectangle de l'origine vers la droite, fond transparent et bord de 1 px comme le rectangle de
+   //    TradingView, ligne médiane en tirets avec le nom, plus haut et plus bas au bord droit (ocre pour
+   //    un order block, bleu achat, rouge vente).
    for(int i = 0; i < ArraySize(g_zones); i++)
      {
       CxZone z = g_zones[i];
@@ -1214,17 +1250,214 @@ void DrawPlan()
       string up = z.type + (z.tf == "US" || z.tf == "" ? "" : " " + z.tf);
       StringToUpper(up);
       bool   ob   = (StringFind(up, "OB") >= 0 || StringFind(up, "ORDER") >= 0);
-      color  fill = ob ? Blend(ChartBg(), C'201,160,90', 0.26) : Blend(ChartBg(), z.buy ? C'41,98,255' : C'242,54,69', 0.13);
-      color  ink  = ob ? C'19,23,34' : (z.buy ? C'41,98,255' : C'242,54,69');
-      color  axis = ob ? C'245,159,0' : (z.buy ? C'41,98,255' : C'242,54,69');
-      string id   = PFX_PLAN + "Z" + IntegerToString(i);
+      color  base = ob ? C'245,159,0' : (z.buy ? C'41,98,255' : C'242,54,69');
+      color  ink  = ob ? C'19,23,34' : base;
       datetime t1 = OriginTime(z.lo, z.hi);
-      Rect(id, t1, z.lo, tFar, z.hi, fill, up + " " + Fr(z.lo, 2) + "–" + Fr(z.hi, 2));
-      NamedLine(id + "m", t1, (z.lo + z.hi) / 2, up, ink, STYLE_DASH);
-      PriceTag(id + "h", z.hi, axis);
-      PriceTag(id + "l", z.lo, axis);
+      CvAdd(CV_RECT, t1, tFar, z.lo, z.hi, Ar(base, ob ? 0.18 : 0.12), Ar(base, 0.60), STYLE_SOLID, 0, "");
+      NamedLine("", t1, (z.lo + z.hi) / 2, up, ink, STYLE_DASH);
+      PriceTag("", z.hi, base);
+      PriceTag("", z.lo, base);
      }
-   ChartRedraw();
+   CvRender();
+  }
+
+//+------------------------------------------------------------------+
+//| Rendu du canvas                                                  |
+//+------------------------------------------------------------------+
+double g_cvX0 = 0, g_cvSp = 1, g_cvY0 = 0, g_cvKy = 0, g_cvPMax = 0;
+int    g_cvF = 0;
+datetime g_cvT0 = 0;
+
+double CvX(datetime t)
+  {
+   int per = PeriodSeconds(PERIOD_CURRENT);
+   double sh;
+   if(t > g_cvT0)
+      sh = -(double)(t - g_cvT0) / per;
+   else
+      sh = iBarShift(_Symbol, PERIOD_CURRENT, t, false);
+   return g_cvX0 + (g_cvF - sh) * g_cvSp;
+  }
+double CvY(double p) { return g_cvY0 + (g_cvPMax - p) * g_cvKy; }
+
+void CvPx(int x, int y, uint c, double cov)
+  {
+   if(x < 0 || y < 0 || x >= g_cvW || y >= g_cvH)
+      return;
+   double sa = ((c >> 24) & 0xFF) / 255.0 * cov;
+   if(sa <= 0.0)
+      return;
+   uint d = g_cvs.PixelGet(x, y);
+   double da = ((d >> 24) & 0xFF) / 255.0;
+   double oa = sa + da * (1.0 - sa);
+   if(oa <= 0.0)
+      return;
+   double k = da * (1.0 - sa);
+   uint r = (uint)MathRound((((c >> 16) & 0xFF) * sa + ((d >> 16) & 0xFF) * k) / oa);
+   uint g = (uint)MathRound((((c >> 8) & 0xFF) * sa + ((d >> 8) & 0xFF) * k) / oa);
+   uint b = (uint)MathRound(((c & 0xFF) * sa + (d & 0xFF) * k) / oa);
+   g_cvs.PixelSet(x, y, ((uint)MathRound(oa * 255.0) << 24) | (r << 16) | (g << 8) | b);
+  }
+
+void CvFill(int x1, int y1, int x2, int y2, uint c)
+  {
+   int xa = MathMax(MathMin(x1, x2), 0), xb = MathMin(MathMax(x1, x2), g_cvW - 1);
+   int ya = MathMax(MathMin(y1, y2), 0), yb = MathMin(MathMax(y1, y2), g_cvH - 1);
+   for(int y = ya; y <= yb; y++)
+      for(int x = xa; x <= xb; x++)
+         CvPx(x, y, c, 1.0);
+  }
+
+void CvFillRound(int x1, int y1, int x2, int y2, double rad, uint c)
+  {
+   for(int y = MathMax(y1, 0); y < MathMin(y2, g_cvH); y++)
+      for(int x = MathMax(x1, 0); x < MathMin(x2, g_cvW); x++)
+        {
+         double px = x + 0.5, py = y + 0.5;
+         double qx = MathMax(MathMax(x1 + rad - px, px - (x2 - rad)), 0.0);
+         double qy = MathMax(MathMax(y1 + rad - py, py - (y2 - rad)), 0.0);
+         double cov = 1.0;
+         if(qx > 0.0 && qy > 0.0)
+            cov = MathMax(0.0, MathMin(1.0, rad + 0.5 - MathSqrt(qx * qx + qy * qy)));
+         if(cov > 0.0)
+            CvPx(x, y, c, cov);
+        }
+  }
+
+//--- Trait de 1 px (TradingView garde 1 px à 125 % et 150 %), plein, tirets ou points.
+void CvLine(double x1, double y1, double x2, double y2, int style, uint c)
+  {
+   double len = MathSqrt((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1));
+   int on = 0, off = 0;
+   if(style == STYLE_DASH) { on = Dp(4); off = Dp(4); }
+   if(style == STYLE_DOT)  { on = 1; off = 2; }
+   if(len < 1.0)
+     {
+      CvPx((int)MathRound(x1), (int)MathRound(y1), c, 1.0);
+      return;
+     }
+   //--- Les traits hors de l'écran ne sont pas parcourus pixel par pixel.
+   double ta = 0.0, tb = len;
+   if(y1 == y2)
+     {
+      double xl = MathMin(x1, x2), xr = MathMax(x1, x2);
+      if(xr < 0 || xl > g_cvW)
+         return;
+      double sgn = x2 >= x1 ? 1.0 : -1.0;
+      ta = MathMax(0.0, sgn > 0 ? -x1 : x1 - g_cvW);
+      tb = MathMin(len, sgn > 0 ? g_cvW - x1 : x1);
+     }
+   int lx = -100000, ly = -100000;
+   for(double s = ta; s <= tb; s += 1.0)
+     {
+      if(style != STYLE_SOLID && ((int)s % (on + off)) >= on)
+         continue;
+      int x = (int)MathRound(x1 + (x2 - x1) * s / len), y = (int)MathRound(y1 + (y2 - y1) * s / len);
+      if(x == lx && y == ly)
+         continue;
+      lx = x; ly = y;
+      CvPx(x, y, c, 1.0);
+     }
+  }
+
+void CvRender()
+  {
+   int W = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
+   int H = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS, 0);
+   int bars = Bars(_Symbol, PERIOD_CURRENT);
+   if(W <= 0 || H <= 0 || bars < 3)
+      return;
+   if(!g_cvsOk)
+     {
+      g_cvsName = PFX_UI + "CV";
+      if(!g_cvs.CreateBitmapLabel(0, 0, g_cvsName, 0, 0, W, H, COLOR_FORMAT_ARGB_NORMALIZE))
+         return;
+      g_cvsOk = true;
+      ObjectSetInteger(0, g_cvsName, OBJPROP_HIDDEN, true);
+      ObjectSetInteger(0, g_cvsName, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, g_cvsName, OBJPROP_BACK, false);
+     }
+   else if(g_cvs.Width() != W || g_cvs.Height() != H)
+      g_cvs.Resize(W, H);
+   g_cvW = W; g_cvH = H;
+   g_cvs.Erase(0);
+
+   //--- Bougie/temps et prix vers pixels, depuis la première bougie visible.
+   g_cvF = (int)ChartGetInteger(0, CHART_FIRST_VISIBLE_BAR);
+   g_cvF = MathMax(1, MathMin(g_cvF, bars - 1));
+   g_cvT0 = iTime(_Symbol, PERIOD_CURRENT, 0);
+   double pMax = ChartGetDouble(0, CHART_PRICE_MAX, 0), pMin = ChartGetDouble(0, CHART_PRICE_MIN, 0);
+   int xa = 0, ya = 0, xb = 0, yb = 0;
+   if(pMax <= pMin || !ChartTimePriceToXY(0, 0, iTime(_Symbol, PERIOD_CURRENT, g_cvF), pMax, xa, ya)
+      || !ChartTimePriceToXY(0, 0, iTime(_Symbol, PERIOD_CURRENT, g_cvF - 1), pMin, xb, yb))
+     {
+      g_cvs.Update(true);
+      return;
+     }
+   g_cvX0 = xa;
+   g_cvSp = xb - xa;
+   if(g_cvSp <= 0)
+      g_cvSp = BarPx();
+   g_cvPMax = pMax; g_cvY0 = ya; g_cvKy = (double)(yb - ya) / (pMax - pMin);
+
+   g_cvs.FontSet(FONT_TV, -CV_FONT_PT * 10);
+   int n = ArraySize(g_cv);
+   //--- Rectangles, puis traits, puis textes, puis prix du bord droit.
+   for(int pass = 0; pass < 4; pass++)
+      for(int i = 0; i < n; i++)
+        {
+         CvItem it = g_cv[i];
+         if(pass == 0 && it.kind == CV_RECT)
+           {
+            int x1 = (int)MathRound(CvX(it.t1)), x2 = (int)MathRound(CvX(it.t2));
+            int y1 = (int)MathRound(CvY(MathMax(it.p1, it.p2))), y2 = (int)MathRound(CvY(MathMin(it.p1, it.p2)));
+            if(x2 < 0 || x1 > W || y2 < 0 || y1 > H)
+               continue;
+            if(it.c2 != 0)
+              {
+               CvFill(x1 + 1, y1 + 1, x2 - 1, y2 - 1, it.c1);
+               CvLine(x1, y1, x2, y1, STYLE_SOLID, it.c2);
+               CvLine(x1, y2, x2, y2, STYLE_SOLID, it.c2);
+               CvLine(x1, y1 + 1, x1, y2 - 1, STYLE_SOLID, it.c2);
+               CvLine(x2, y1 + 1, x2, y2 - 1, STYLE_SOLID, it.c2);
+              }
+            else
+               CvFill(x1, y1, x2, y2, it.c1);
+           }
+         else if(pass == 1 && (it.kind == CV_SEG || it.kind == CV_TREND))
+           {
+            double x1 = MathRound(CvX(it.t1)), x2 = MathRound(CvX(it.t2));
+            double y1 = MathRound(CvY(it.p1)), y2 = MathRound(CvY(it.p2));
+            CvLine(x1, y1, x2, y2, it.style, it.c1);
+           }
+         else if(pass == 2 && it.kind == CV_TEXT)
+           {
+            int x = (int)MathRound(CvX(it.t1)), y = (int)MathRound(CvY(it.p1));
+            if(x < -300 || x > W + 300)
+               continue;
+            int tw = 0, th = 0;
+            g_cvs.TextSize(it.text, tw, th);
+            int padX = Dp(5), padY = Dp(2), gap = Dp(2);
+            int bw = tw + 2 * padX, bh = th + 2 * padY;
+            int top = it.anchor == ANCHOR_LOWER ? y - gap - bh : (it.anchor == ANCHOR_UPPER ? y + gap : y - bh / 2);
+            if(it.c2 != 0)
+               CvFillRound(x - bw / 2, top, x - bw / 2 + bw, top + bh, 2.0 * g_k, it.c2);
+            g_cvs.TextOut(x, top + bh / 2, it.text, it.c1, TA_CENTER | TA_VCENTER);
+           }
+         else if(pass == 3 && it.kind == CV_PRICE)
+           {
+            int y = (int)MathRound(CvY(it.p1));
+            if(y < -20 || y > H + 20)
+               continue;
+            int tw = 0, th = 0;
+            g_cvs.TextSize(it.text, tw, th);
+            int bw = tw + 2 * Dp(4), bh = th + 2 * Dp(2);
+            int x1 = (int)MathRound(CvX(RightTime())), x2 = x1 + bw;
+            CvFillRound(x1, y - bh / 2, x2, y - bh / 2 + bh, 2.0 * g_k, it.c1);
+            g_cvs.TextOut(x1 + bw / 2, y, it.text, Ar(clrWhite, 1.0), TA_CENTER | TA_VCENTER);
+           }
+        }
+   g_cvs.Update(true);
   }
 
 //--- Bandeau d'état en haut à gauche ; y en pixels à 100 %, mis à l'échelle de l'écran.
