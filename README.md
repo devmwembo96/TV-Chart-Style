@@ -7,7 +7,8 @@ Indicateurs TradingView réécrits en MQL5, avec le même calcul et le même ren
 | Fichier | Indicateur TradingView |
 |---|---|
 | `Indicators/LGD_CSD_Fib.mq5` | Liquidity Grab, CSD & Focused Fibonacci (LGD+CSD+Fib) |
-| `EA/CarnetXAU.mq5` | EA du Carnet XAU 2.15 : plan de Claude dessiné au style TradingView (base 2.14 du carnet) |
+| `EA/CarnetXAU.mq5` | EA du Carnet XAU 2.16 : plan de Claude dessiné au style TradingView (base 2.14 du carnet) |
+| `EA/CalculateurXAU.mq5` | Calculateur XAU 4.02 : outil position au style TradingView (base 4.01 du carnet) |
 | `Indicators/TV_Chart_Style.mq5` | Style du graphique clair TradingView (bougies, fond, sans grille ni volumes) |
 
 ## Installation
@@ -22,6 +23,6 @@ Indicateurs TradingView réécrits en MQL5, avec le même calcul et le même ren
 - L’échelle d’affichage de Windows est prise en compte automatiquement.
 - La bougie en cours est recalculée à chaque tick, comme sur TradingView.
 
-## CarnetXAU
+## CarnetXAU et CalculateurXAU
 
-L’EA appartient au Carnet XAU. Les retouches d’affichage faites ici partent de la version livrée par le carnet ; chaque nouvelle version doit être transmise au carnet pour que les deux restent identiques.
+Les deux EA appartiennent au Carnet XAU. Les retouches d’affichage faites ici partent de la version livrée par le carnet ; chaque nouvelle version doit être transmise au carnet pour que les deux restent identiques.
