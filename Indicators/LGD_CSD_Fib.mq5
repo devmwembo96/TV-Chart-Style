@@ -6,7 +6,7 @@
 //| retrouver la transparence et les étiquettes de TradingView.      |
 //+------------------------------------------------------------------+
 #property copyright   "MPL 2.0 — portage de l'indicateur TradingView LGD+CSD+Fib"
-#property version     "1.01"
+#property version     "1.02"
 #property description "Liquidity Grab, CSD & Focused Fibonacci (LGD+CSD+Fib), affichage au style TradingView."
 #property indicator_chart_window
 #property indicator_buffers 0
@@ -592,6 +592,8 @@ double gX0 = 0, gSp = 1, gY0 = 0, gKy = 0, gPMax = 0;
 int    gT0 = 0;
 
 int Px(double v) { return (int)MathRound(v * gDpi); }
+// épaisseur de trait : TradingView arrondit à l'entier inférieur (1 px reste 1 px à 125 % et 150 %)
+int Wpx(int w) { return MathMax(1, (int)MathFloor(w * gDpi)); }
 double XofBar(int t) { return gX0 + (t - gT0) * gSp; }
 double YofPrice(double p) { return gY0 + (gPMax - p) * gKy; }
 
@@ -688,7 +690,7 @@ void FillPointer(double ax, int ay, int h, double halfW, int dir, uint c)
 void SetFont(int size)
   {
 // tailles mesurées sur les captures TradingView ; taille négative = dixièmes de point, suit l'échelle de Windows
-   gCv.FontSet(InpFont, size == SZ_TINY ? -50 : -65);
+   gCv.FontSet(InpFont, size == SZ_TINY ? -45 : -60);
   }
 
 string LabelText(const SLabel &lb)
@@ -737,7 +739,7 @@ void Render(CState &S)
    gPMax = pMax; gY0 = ya; gKy = (double)(yb - ya) / (pMax - pMin);
 
    uint bgArgb = ColorToARGB((color)ChartGetInteger(0, CHART_COLOR_BACKGROUND), 255);
-   int bw = MathMax(1, Px(1));
+   int bw = Wpx(1);
 
 //--- boîtes
    SetFont(SZ_TINY);
@@ -769,7 +771,7 @@ void Render(CState &S)
       if(x2 < 0 || x1 > W)
          continue;
       int y = (int)MathRound(YofPrice(S.lines[i].y1));
-      HLine(x1, x2, y, MathMax(1, Px(S.lines[i].width)), S.lines[i].style, S.lines[i].clr);
+      HLine(x1, x2, y, Wpx(S.lines[i].width), S.lines[i].style, S.lines[i].clr);
      }
 
 //--- étiquettes
