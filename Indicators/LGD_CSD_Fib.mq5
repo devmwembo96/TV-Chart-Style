@@ -6,7 +6,7 @@
 //| retrouver la transparence et les étiquettes de TradingView.      |
 //+------------------------------------------------------------------+
 #property copyright   "MPL 2.0 — portage de l'indicateur TradingView LGD+CSD+Fib"
-#property version     "1.00"
+#property version     "1.01"
 #property description "Liquidity Grab, CSD & Focused Fibonacci (LGD+CSD+Fib), affichage au style TradingView."
 #property indicator_chart_window
 #property indicator_buffers 0
@@ -687,8 +687,8 @@ void FillPointer(double ax, int ay, int h, double halfW, int dir, uint c)
 
 void SetFont(int size)
   {
-// tiny ≈ 9 px, small ≈ 11 px à 96 ppp ; taille négative = dixièmes de point, suit l'échelle de Windows
-   gCv.FontSet(InpFont, size == SZ_TINY ? -68 : -83);
+// tailles mesurées sur les captures TradingView ; taille négative = dixièmes de point, suit l'échelle de Windows
+   gCv.FontSet(InpFont, size == SZ_TINY ? -50 : -65);
   }
 
 string LabelText(const SLabel &lb)
@@ -795,7 +795,7 @@ void Render(CState &S)
         }
       int tw = 0, th = 0;
       gCv.TextSize(txt, tw, th);
-      int padX = Px(4), padY = Px(1), ph = Px(4);
+      int padX = Px(3), padY = Px(1), ph = Px(3);
       int w = (int)tw + 2 * padX, h = (int)th + 2 * padY;
       int iy = (int)MathRound(ay);
       int x1 = (int)MathRound(ax - w / 2.0);

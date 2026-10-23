@@ -7,6 +7,7 @@ Indicateurs TradingView réécrits en MQL5, avec le même calcul et le même ren
 | Fichier | Indicateur TradingView |
 |---|---|
 | `Indicators/LGD_CSD_Fib.mq5` | Liquidity Grab, CSD & Focused Fibonacci (LGD+CSD+Fib) |
+| `Indicators/TV_Chart_Style.mq5` | Style du graphique clair TradingView (bougies, fond, sans grille ni volumes) |
 
 ## Installation
 
