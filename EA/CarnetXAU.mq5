@@ -48,8 +48,9 @@
 //| Affichage façon TradingView : police Trebuchet MS, couleurs      |
 //| semi-transparentes sur le fond du graphique, et mise à l'échelle |
 //| de l'écran (Windows à 125 % ou 150 %) : le texte ne déborde plus.|
-//| Le plan est dessiné en CCanvas (2.15) : vraie transparence des    |
-//| zones, traits de 1 px, étiquettes pleines aux prix du bord droit. |
+//| Plan et signaux dessinés en CCanvas (2.15), comme l'indicateur    |
+//| LGD+CSD+Fib : zones vert achat / rouge vente, texte à la taille   |
+//| des blocs BB, étiquettes pleines ; tableau du Calculateur XAU.    |
 //|                                                                  |
 //| Règles du signal (calculées à partir du plan de Claude) :        |
 //| - le prix touche une zone de Claude non cassée ;                 |
@@ -166,6 +167,24 @@ struct CxTrack
   };
 CxTrack  g_tracks[];
 #define TRACK_FILE "CarnetXAU_signaux.csv"
+
+//--- Dessins des signaux (outil position de TradingView), gardés 7 jours dans un fichier : ils restent
+//    affichés après un changement d'unité de temps ou un redémarrage, comme les objets des versions 2.14.
+struct CxDraw
+  {
+   string   id;
+   datetime t;
+   datetime t2;
+   bool     buy;
+   double   entry;
+   double   sl;
+   double   tp;
+   double   p2r;       // 0 : variante « retour FVG » (trait d'entrée seul)
+   string   text;
+   bool     grey;      // limite annulée
+  };
+CxDraw   g_draws[];
+#define DRAW_FILE "CarnetXAU_dessins.csv"
 #define TRACK_MAX_HOURS 24
 
 //--- État
@@ -195,27 +214,6 @@ bool     g_cvsOk = false;
 string   g_cvsName = "";
 int      g_cvW = 0, g_cvH = 0;
 
-//--- Largeur réelle d'un texte en Trebuchet MS, en pixels, à l'échelle de l'écran.
-int TextPx(string txt, int pt, bool bold)
-  {
-   uint w = 0, h = 0;
-   TextSetFont(FONT_TV, -pt * 10, bold ? FW_BOLD : FW_NORMAL);
-   if(!TextGetSize(txt, w, h) || w == 0)
-      return (int)(StringLen(txt) * pt * 0.8 * g_k);
-   return (int)w;
-  }
-
-//--- Couleur fg posée à « a » (0 à 1) sur le fond du graphique : la transparence de TradingView.
-color Blend(color bg, color fg, double a)
-  {
-   int b0 = (int)bg, f0 = (int)fg;
-   int r  = (int)MathRound((b0 & 0xFF) + (((f0 & 0xFF) - (b0 & 0xFF)) * a));
-   int g  = (int)MathRound(((b0 >> 8) & 0xFF) + ((((f0 >> 8) & 0xFF) - ((b0 >> 8) & 0xFF)) * a));
-   int b  = (int)MathRound(((b0 >> 16) & 0xFF) + ((((f0 >> 16) & 0xFF) - ((b0 >> 16) & 0xFF)) * a));
-   return (color)(r | (g << 8) | (b << 16));
-  }
-color ChartBg() { return (color)ChartGetInteger(0, CHART_COLOR_BACKGROUND); }
-
 //+------------------------------------------------------------------+
 int OnInit()
   {
@@ -229,6 +227,8 @@ int OnInit()
    g_hash = "";                 // changement d'unité de temps : les variables restent, les objets non → tout redessiner
    g_lastM1 = 0;
    LoadTracks();
+   LoadDraws();
+   ObjectsDeleteAll(0, PFX_SIG);   // objets des signaux des versions 2.14 et avant : redessinés en canvas
    string gv = "CarnetXAU_" + IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN)) + "_" + _Symbol;
    GV_M1  = gv + "_M1";
    GV_M15 = gv + "_M15";
@@ -238,6 +238,7 @@ int OnInit()
       g_doneM15 = (datetime)GlobalVariableGet(GV_M15);
    g_k = MathMax(0.75, MathMin(3.0, TerminalInfoInteger(TERMINAL_SCREEN_DPI) / 96.0));
    ApplyTVStyle();
+   DrawPlan();                     // canvas créé avant le tableau : le tableau reste au-dessus
    Sync();
    FetchPlan();
    PublishCarnet();
@@ -279,7 +280,7 @@ void OnTimer()
 void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
   {
    static long scale = -1, first = -1, width = -1;
-   if(id != CHARTEVENT_CHART_CHANGE || !InpDrawPlan || g_hash == "")
+   if(id != CHARTEVENT_CHART_CHANGE)
       return;
    long s = ChartGetInteger(0, CHART_SCALE), f = ChartGetInteger(0, CHART_FIRST_VISIBLE_BAR), w = ChartGetInteger(0, CHART_WIDTH_IN_BARS);
    if(s == scale && f == first && w == width)
@@ -308,7 +309,7 @@ void OnTick()
    PublishCarnet();             // signe de vie pour le Calculateur XAU
    static datetime lastBar = 0;
    datetime bar = iTime(_Symbol, PERIOD_CURRENT, 0);
-   if(InpDrawPlan && g_hash != "" && bar != lastBar)
+   if(bar != lastBar)
      {
       lastBar = bar;
       DrawPlan();               // le scénario et les étiquettes suivent la dernière bougie
@@ -394,7 +395,7 @@ void CloseTrack(int i, double r, string when, datetime t)
    string st  = (r > 0.05) ? "gagne" : (r < -0.05 ? "perdu" : "be");
    string res = (r >= 0 ? "+" : "-") + Fr(MathAbs(r), 1) + "R";
    g_status = "Signal Claude " + g_tracks[i].label + " clôturé : " + res + when + ".";
-   ObjectSetString(0, g_tracks[i].id + "_T", OBJPROP_TEXT, g_tracks[i].label + " : résultat " + res);
+   DrawUpdate(g_tracks[i].id, g_tracks[i].label + " : résultat " + res, false);
    TrackEvent(i, st, ",\"result_r\":" + Num(r, 2) + ",\"reached_2r\":" + (g_tracks[i].hit2r ? "true" : "false")
               + ",\"mfe\":" + Num(g_tracks[i].mfe, 2) + ",\"mae\":" + Num(g_tracks[i].mae, 2), t);
    ChartRedraw();
@@ -445,10 +446,7 @@ void ProcessBar(double hi, double lo, double cl, datetime t, bool late)
            {
             g_tracks[i].status = 2;
             changed = true;
-            string names[] = {"_TP", "_SL", "_2R", "_T"};
-            for(int n = 0; n < ArraySize(names); n++)
-               ObjectSetInteger(0, g_tracks[i].id + names[n], OBJPROP_COLOR, C'225,225,225');
-            ObjectSetString(0, g_tracks[i].id + "_T", OBJPROP_TEXT, g_tracks[i].label + " annulé (prix non atteint en " + IntegerToString(g_limitMin) + " min)");
+            DrawUpdate(g_tracks[i].id, g_tracks[i].label + " annulé (prix non atteint en " + IntegerToString(g_limitMin) + " min)", true);
             bool variant = StringFind(g_tracks[i].label, "RETOUR") >= 0;   // variante suivie sans alerte
             if(!late && !variant)
                Notify("Carnet XAU : " + g_tracks[i].label + " " + Fr(e, 2) + " annulé, prix non atteint en " + IntegerToString(g_limitMin) + " min.");
@@ -936,38 +934,6 @@ void ObjBase(string name)
    ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
   }
 
-void Text(string name, datetime t, double price, string txt, color clr, int size)
-  {
-   ObjectCreate(0, name, OBJ_TEXT, 0, t, price);
-   ObjectSetString(0, name, OBJPROP_TEXT, txt);
-   ObjectSetString(0, name, OBJPROP_FONT, FONT_TV);
-   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
-   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, size);
-   ObjectSetInteger(0, name, OBJPROP_ANCHOR, ANCHOR_LEFT_LOWER);
-   ObjBase(name);
-  }
-
-void HLine(string name, double price, color clr, ENUM_LINE_STYLE style, int width, string tip)
-  {
-   ObjectCreate(0, name, OBJ_HLINE, 0, 0, price);
-   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
-   ObjectSetInteger(0, name, OBJPROP_STYLE, style);
-   ObjectSetInteger(0, name, OBJPROP_WIDTH, width);
-   ObjectSetInteger(0, name, OBJPROP_BACK, true);
-   ObjectSetString(0, name, OBJPROP_TOOLTIP, tip);
-   ObjBase(name);
-  }
-
-void Rect(string name, datetime t1, double p1, datetime t2, double p2, color clr, string tip)
-  {
-   ObjectCreate(0, name, OBJ_RECTANGLE, 0, t1, p1, t2, p2);
-   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
-   ObjectSetInteger(0, name, OBJPROP_FILL, true);
-   ObjectSetInteger(0, name, OBJPROP_BACK, true);
-   ObjectSetString(0, name, OBJPROP_TOOLTIP, tip);
-   ObjBase(name);
-  }
-
 //--- Style TradingView clair : fond blanc, sans grille, bougies vert 089981 et rouge F23645.
 //    Les réglages d'origine du graphique sont gardés et rétablis quand l'EA est retiré.
 ENUM_CHART_PROPERTY_INTEGER g_styleKeys[] = { CHART_MODE, CHART_SHOW_GRID, CHART_COLOR_BACKGROUND, CHART_COLOR_FOREGROUND,
@@ -1069,7 +1035,7 @@ struct CvItem
    string   text;
   };
 CvItem   g_cv[];
-#define  CV_FONT_PT 7                // texte des noms et des étiquettes (points)
+#define  CV_FONT 45                 // dixièmes de point : même taille que « BB » de LGD+CSD+Fib, pour tout le plan
 
 uint Ar(color c, double a) { return ColorToARGB(c, (uchar)MathRound(255.0 * MathMax(0.0, MathMin(1.0, a)))); }
 
@@ -1085,9 +1051,9 @@ void CvAdd(int kind, datetime t1, datetime t2, double p1, double p2, uint c1, ui
 int CvTextPx(string txt)
   {
    uint w = 0, h = 0;
-   TextSetFont(FONT_TV, -CV_FONT_PT * 10, FW_NORMAL);
+   TextSetFont(FONT_TV, -CV_FONT, FW_NORMAL);
    if(!TextGetSize(txt, w, h) || w == 0)
-      return (int)(StringLen(txt) * CV_FONT_PT * 0.8 * g_k);
+      return (int)(StringLen(txt) * CV_FONT * 0.08 * g_k);
    return (int)w;
   }
 
@@ -1121,7 +1087,7 @@ void PriceTag(string name, double price, color clr)
   {
    int y = PriceY(price);
    for(int i = 0; i < ArraySize(g_tagY); i++)
-      if(MathAbs(g_tagY[i] - y) < Dp(15))
+      if(MathAbs(g_tagY[i] - y) < Dp(11))
          return;
    int n = ArraySize(g_tagY);
    ArrayResize(g_tagY, n + 1);
@@ -1176,6 +1142,96 @@ void NamedLine(string id, datetime t1, double price, string txt, color clr, ENUM
    CvAdd(CV_TEXT, tm, 0, price, 0, Ar(clr, 1.0), 0, STYLE_SOLID, ANCHOR_CENTER, txt);
   }
 
+void SaveDraws()
+  {
+   int h = FileOpen(DRAW_FILE, FILE_WRITE | FILE_CSV | FILE_UNICODE, ';');
+   if(h == INVALID_HANDLE)
+      return;
+   for(int i = 0; i < ArraySize(g_draws); i++)
+     {
+      CxDraw d = g_draws[i];
+      if(TimeCurrent() - d.t > 7 * 86400)
+         continue;
+      FileWrite(h, d.id, (long)d.t, (long)d.t2, (int)d.buy, Num(d.entry, 2), Num(d.sl, 2), Num(d.tp, 2), Num(d.p2r, 2), d.text, (int)d.grey);
+     }
+   FileClose(h);
+  }
+
+void LoadDraws()
+  {
+   ArrayResize(g_draws, 0);
+   if(!FileIsExist(DRAW_FILE))
+      return;
+   int h = FileOpen(DRAW_FILE, FILE_READ | FILE_CSV | FILE_UNICODE, ';');
+   if(h == INVALID_HANDLE)
+      return;
+   while(!FileIsEnding(h))
+     {
+      string id = FileReadString(h);
+      if(id == "")
+         break;
+      int k = ArraySize(g_draws);
+      ArrayResize(g_draws, k + 1);
+      g_draws[k].id    = id;
+      g_draws[k].t     = (datetime)StringToInteger(FileReadString(h));
+      g_draws[k].t2    = (datetime)StringToInteger(FileReadString(h));
+      g_draws[k].buy   = (StringToInteger(FileReadString(h)) == 1);
+      g_draws[k].entry = StringToDouble(FileReadString(h));
+      g_draws[k].sl    = StringToDouble(FileReadString(h));
+      g_draws[k].tp    = StringToDouble(FileReadString(h));
+      g_draws[k].p2r   = StringToDouble(FileReadString(h));
+      g_draws[k].text  = FileReadString(h);
+      g_draws[k].grey  = (StringToInteger(FileReadString(h)) == 1);
+     }
+   FileClose(h);
+  }
+
+void DrawAdd(string id, datetime t, datetime t2, bool buy, double entry, double sl, double tp, double p2r, string text)
+  {
+   int k = ArraySize(g_draws);
+   ArrayResize(g_draws, k + 1);
+   g_draws[k].id = id; g_draws[k].t = t; g_draws[k].t2 = t2; g_draws[k].buy = buy;
+   g_draws[k].entry = entry; g_draws[k].sl = sl; g_draws[k].tp = tp; g_draws[k].p2r = p2r;
+   g_draws[k].text = text; g_draws[k].grey = false;
+   SaveDraws();
+   DrawPlan();
+  }
+
+//--- Texte d'un signal (résultat, annulation) ; grey : limite annulée, dessin en gris.
+void DrawUpdate(string id, string text, bool grey)
+  {
+   for(int i = 0; i < ArraySize(g_draws); i++)
+      if(g_draws[i].id == id)
+        {
+         g_draws[i].text = text;
+         g_draws[i].grey = g_draws[i].grey || grey;
+        }
+   SaveDraws();
+   DrawPlan();
+  }
+
+//--- Signaux : outil position longue / courte de TradingView (objectif vert, stop rouge à 20 %),
+//    étiquette BUY / SELL à pointe sur l'entrée, 2R en pointillés, texte du signal en étiquette pleine.
+void DrawSignals()
+  {
+   color gry = C'178,181,190';
+   for(int i = 0; i < ArraySize(g_draws); i++)
+     {
+      CxDraw d = g_draws[i];
+      color dir = d.grey ? gry : (d.buy ? C'8,153,129' : C'242,54,69');
+      if(d.p2r == 0)
+        {
+         CvAdd(CV_SEG, d.t, d.t2, d.entry, d.entry, Ar(dir, 1.0), 0, STYLE_DOT, 0, "");
+         continue;
+        }
+      CvAdd(CV_RECT, d.t, d.t2, d.entry, d.tp, Ar(d.grey ? gry : C'8,153,129', d.grey ? 0.12 : 0.20), 0, STYLE_SOLID, 0, "");
+      CvAdd(CV_RECT, d.t, d.t2, d.entry, d.sl, Ar(d.grey ? gry : C'242,54,69', d.grey ? 0.12 : 0.20), 0, STYLE_SOLID, 0, "");
+      CvAdd(CV_SEG, d.t, d.t2, d.p2r, d.p2r, Ar(d.grey ? gry : C'8,153,129', 1.0), 0, STYLE_DOT, 0, "");
+      CvAdd(CV_TEXT, d.t, 0, d.entry, 0, Ar(clrWhite, 1.0), Ar(dir, 1.0), 1, d.buy ? ANCHOR_UPPER : ANCHOR_LOWER, d.buy ? "BUY" : "SELL");
+      CvAdd(CV_TEXT, d.t + (d.t2 - d.t) / 2, 0, MathMax(d.tp, d.sl), 0, Ar(clrWhite, 1.0), Ar(dir, 1.0), STYLE_SOLID, ANCHOR_LOWER, d.text);
+     }
+  }
+
 void DrawPlan()
   {
    ObjectsDeleteAll(0, PFX_PLAN);    // objets des versions précédentes
@@ -1184,7 +1240,12 @@ void DrawPlan()
    ArrayResize(g_lblX, 0);
    ArrayResize(g_lblY, 0);
    ArrayResize(g_lblW, 0);
-   datetime tFar = TimeCurrent() + 7 * 86400;
+   if(!InpDrawPlan || g_hash == "")
+     {
+      DrawSignals();             // les signaux restent dessinés, même sans plan
+      CvRender();
+      return;
+     }
 
    //--- Ordre de priorité des prix au bord droit : scénario principal, invalidation, niveaux, zones.
    //--- Scénarios d'exécution : outils position longue / courte côte à côte à droite du prix, trajet
@@ -1239,9 +1300,7 @@ void DrawPlan()
       PriceTag("", g_levels[i].price, clr);
      }
    //--- Zones encore valides (une zone cassée n'est plus tracée, comme sur la capture du carnet) :
-   //    rectangle de l'origine vers la droite, fond transparent et bord de 1 px comme le rectangle de
-   //    TradingView, ligne médiane en tirets avec le nom, plus haut et plus bas au bord droit (ocre pour
-   //    un order block, bleu achat, rouge vente).
+   //    rectangle de l'origine au bord droit, plus haut et plus bas en étiquettes de prix.
    for(int i = 0; i < ArraySize(g_zones); i++)
      {
       CxZone z = g_zones[i];
@@ -1249,15 +1308,14 @@ void DrawPlan()
          continue;
       string up = z.type + (z.tf == "US" || z.tf == "" ? "" : " " + z.tf);
       StringToUpper(up);
-      bool   ob   = (StringFind(up, "OB") >= 0 || StringFind(up, "ORDER") >= 0);
-      color  base = ob ? C'245,159,0' : (z.buy ? C'41,98,255' : C'242,54,69');
-      color  ink  = ob ? C'19,23,34' : base;
+      //--- Comme les blocs BB de LGD+CSD+Fib : vert achat, rouge vente, fond à 25 %, bord plein, nom au centre.
+      color  base = z.buy ? C'8,153,129' : C'242,54,69';
       datetime t1 = OriginTime(z.lo, z.hi);
-      CvAdd(CV_RECT, t1, tFar, z.lo, z.hi, Ar(base, ob ? 0.18 : 0.12), Ar(base, 0.60), STYLE_SOLID, 0, "");
-      NamedLine("", t1, (z.lo + z.hi) / 2, up, ink, STYLE_DASH);
+      CvAdd(CV_RECT, t1, RightTime(), z.lo, z.hi, Ar(base, 0.25), Ar(base, 1.0), STYLE_SOLID, 0, up);
       PriceTag("", z.hi, base);
       PriceTag("", z.lo, base);
      }
+   DrawSignals();
    CvRender();
   }
 
@@ -1360,6 +1418,22 @@ void CvLine(double x1, double y1, double x2, double y2, int style, uint c)
      }
   }
 
+//--- Pointe d'étiquette : sommet (ax, ay), base à ay + dir*h.
+void CvPointer(double ax, int ay, int h, double halfW, int dir, uint c)
+  {
+   for(int j = 0; j < h; j++)
+     {
+      double half = halfW * (j + 0.5) / h;
+      int y = ay + dir * j - (dir < 0 ? 1 : 0);
+      for(int x = (int)MathFloor(ax - half - 1); x <= (int)MathCeil(ax + half + 1); x++)
+        {
+         double cov = MathMax(0.0, MathMin(1.0, half + 0.5 - MathAbs(x + 0.5 - ax)));
+         if(cov > 0.0)
+            CvPx(x, y, c, cov);
+        }
+     }
+  }
+
 void CvRender()
   {
    int W = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
@@ -1400,7 +1474,7 @@ void CvRender()
       g_cvSp = BarPx();
    g_cvPMax = pMax; g_cvY0 = ya; g_cvKy = (double)(yb - ya) / (pMax - pMin);
 
-   g_cvs.FontSet(FONT_TV, -CV_FONT_PT * 10);
+   g_cvs.FontSet(FONT_TV, -CV_FONT);
    int n = ArraySize(g_cv);
    //--- Rectangles, puis traits, puis textes, puis prix du bord droit.
    for(int pass = 0; pass < 4; pass++)
@@ -1423,6 +1497,12 @@ void CvRender()
               }
             else
                CvFill(x1, y1, x2, y2, it.c1);
+            if(it.text != "")
+              {
+               //--- Nom au centre de la partie visible du bloc, dans la couleur du bord.
+               int va = MathMax(x1, 0), vb = MathMin(x2, W);
+               g_cvs.TextOut((va + vb) / 2, (y1 + y2) / 2, it.text, it.c2 | 0xFF000000, TA_CENTER | TA_VCENTER);
+              }
            }
          else if(pass == 1 && (it.kind == CV_SEG || it.kind == CV_TREND))
            {
@@ -1437,11 +1517,16 @@ void CvRender()
                continue;
             int tw = 0, th = 0;
             g_cvs.TextSize(it.text, tw, th);
-            int padX = Dp(5), padY = Dp(2), gap = Dp(2);
+            int padX = Dp(3), padY = Dp(1), gap = it.style == 1 ? Dp(3) : Dp(2);
             int bw = tw + 2 * padX, bh = th + 2 * padY;
             int top = it.anchor == ANCHOR_LOWER ? y - gap - bh : (it.anchor == ANCHOR_UPPER ? y + gap : y - bh / 2);
             if(it.c2 != 0)
+              {
+               //--- style 1 : pointe vers le prix, comme les étiquettes « CSD ».
+               if(it.style == 1 && it.anchor != ANCHOR_CENTER)
+                  CvPointer(x, y, gap + 1, gap, it.anchor == ANCHOR_UPPER ? 1 : -1, it.c2);
                CvFillRound(x - bw / 2, top, x - bw / 2 + bw, top + bh, 2.0 * g_k, it.c2);
+              }
             g_cvs.TextOut(x, top + bh / 2, it.text, it.c1, TA_CENTER | TA_VCENTER);
            }
          else if(pass == 3 && it.kind == CV_PRICE)
@@ -1451,7 +1536,7 @@ void CvRender()
                continue;
             int tw = 0, th = 0;
             g_cvs.TextSize(it.text, tw, th);
-            int bw = tw + 2 * Dp(4), bh = th + 2 * Dp(2);
+            int bw = tw + 2 * Dp(3), bh = th + 2 * Dp(1);
             int x1 = (int)MathRound(CvX(RightTime())), x2 = x1 + bw;
             CvFillRound(x1, y - bh / 2, x2, y - bh / 2 + bh, 2.0 * g_k, it.c1);
             g_cvs.TextOut(x1 + bw / 2, y, it.text, Ar(clrWhite, 1.0), TA_CENTER | TA_VCENTER);
@@ -1460,106 +1545,198 @@ void CvRender()
    g_cvs.Update(true);
   }
 
-//--- Bandeau d'état en haut à gauche ; y en pixels à 100 %, mis à l'échelle de l'écran.
-int g_uiW = 0;                     // texte le plus large du bandeau (pixels)
+//+------------------------------------------------------------------+
+//| Tableau en haut à gauche, même dessin que le ticket du           |
+//| Calculateur XAU : fond 131722, cadres 363A45, Trebuchet MS.      |
+//+------------------------------------------------------------------+
+#define UI_BG      C'19,23,34'
+#define UI_BORDER  C'54,58,69'
+#define UI_TEXT    C'219,222,229'
+#define UI_MUTED   C'134,139,152'
+#define UI_GREEN   C'8,153,129'
+#define UI_RED     C'242,54,69'
+#define UI_ORANGE  C'238,164,52'
+#define UI_INFO_BG C'30,34,45'
+#define UI_TINT_G  C'16,48,42'
+#define UI_TINT_R  C'64,24,30'
+#define UI_TINT_O  C'60,46,22'
+#define UI_TINT_N  C'30,34,45'
+#define UI_SELL_ON C'84,28,36'
+#define UI_SELL_TX C'247,82,95'
+#define UI_BUY_ON  C'20,44,100'
+#define UI_BUY_TX  C'91,156,246'
+#define UI_SIDE    C'30,34,45'
 
-void Label(string name, int y, string txt, color clr)
+int g_uiInner = 280;               // largeur utile du tableau (pixels)
+int g_uiFs    = 9;                 // taille du texte (points)
+int g_uiX     = 0;
+
+void UiRect(string name, int x, int y, int w, int h, color bg, color border)
+  {
+   if(ObjectFind(0, name) < 0)
+     {
+      ObjectCreate(0, name, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+      ObjectSetInteger(0, name, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+      ObjectSetInteger(0, name, OBJPROP_WIDTH, 1);
+      ObjectSetInteger(0, name, OBJPROP_BACK, false);
+      ObjBase(name);
+     }
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, name, OBJPROP_XSIZE, w);
+   ObjectSetInteger(0, name, OBJPROP_YSIZE, h);
+   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, bg);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, border);
+  }
+
+//--- Texte coupé à la largeur disponible (pixels), avec « … ».
+string FitPx(string text, int px, int pt)
+  {
+   uint w = 0, h = 0;
+   TextSetFont(FONT_TV, -pt * 10);
+   if(!TextGetSize(text, w, h) || (int)w <= px)
+      return text;
+   int lo = 1, hi = StringLen(text) - 1;
+   while(lo < hi)
+     {
+      int mid = (lo + hi + 1) / 2;
+      if(TextGetSize(StringSubstr(text, 0, mid) + "…", w, h) && (int)w <= px)
+         lo = mid;
+      else
+         hi = mid - 1;
+     }
+   return StringSubstr(text, 0, lo) + "…";
+  }
+
+//--- anchor : ANCHOR_LEFT_UPPER, ANCHOR_RIGHT_UPPER ou ANCHOR_UPPER (centré).
+void UiText(string name, int x, int y, string txt, color clr, int fs, string font, ENUM_ANCHOR_POINT anchor)
   {
    if(ObjectFind(0, name) < 0)
      {
       ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
       ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-      ObjectSetInteger(0, name, OBJPROP_XDISTANCE, Dp(10));
-      ObjectSetString(0, name, OBJPROP_FONT, FONT_TV);
-      ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 9);
+      ObjectSetInteger(0, name, OBJPROP_BACK, false);
       ObjBase(name);
      }
-   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, Dp(y));
+   ObjectSetInteger(0, name, OBJPROP_ANCHOR, anchor);
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetString(0, name, OBJPROP_FONT, font);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, fs);
    ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
-   ObjectSetString(0, name, OBJPROP_TEXT, txt == "" ? " " : txt);
-   g_uiW = (int)MathMax(g_uiW, TextPx(txt, 9, false));
+   string t = txt == "" ? " " : txt;
+   if(ObjectGetString(0, name, OBJPROP_TEXT) != t)
+      ObjectSetString(0, name, OBJPROP_TEXT, t);
   }
 
-void DrawPanel()
+//--- Zones de Claude les plus proches du prix : au-dessus, en dessous, ou celle où se trouve le prix.
+void NearestZones(string &above, string &below, string &inside)
   {
-   string bg = PFX_UI + "BG";
-   if(ObjectFind(0, bg) < 0)
-     {
-      ObjectCreate(0, bg, OBJ_RECTANGLE_LABEL, 0, 0, 0);
-      ObjectSetInteger(0, bg, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-      ObjectSetInteger(0, bg, OBJPROP_XDISTANCE, Dp(4));
-      ObjectSetInteger(0, bg, OBJPROP_YDISTANCE, Dp(16));
-      ObjectSetInteger(0, bg, OBJPROP_XSIZE, Dp(460));
-      ObjectSetInteger(0, bg, OBJPROP_YSIZE, Dp(120));
-      ObjectSetInteger(0, bg, OBJPROP_BGCOLOR, (color)ChartGetInteger(0, CHART_COLOR_BACKGROUND));
-      ObjectSetInteger(0, bg, OBJPROP_BORDER_TYPE, BORDER_FLAT);
-      ObjectSetInteger(0, bg, OBJPROP_COLOR, C'224,227,235');
-      ObjectSetInteger(0, bg, OBJPROP_BACK, false);
-      ObjBase(bg);
-     }
-   g_uiW = 0;
-   string bias = "neutre";
-   if(g_bull > g_bear)
-      bias = "haussier";
-   else if(g_bear > g_bull)
-      bias = "baissier";
-   Label(PFX_UI + "1", 20, "Carnet XAU · plan de Claude" + (g_week == "" ? "" : " · semaine du " + g_week), C'19,23,34');
-   Label(PFX_UI + "2", 36, g_planOk ? "Biais " + bias + " · haussier " + IntegerToString(g_bull) + " % · baissier " + IntegerToString(g_bear)
-         + " % · range " + IntegerToString(g_range) + " %" : "Aucun plan publié pour la semaine", C'19,23,34');
-   Label(PFX_UI + "3", 52, g_inval > 0 ? "Invalidation " + Fr(g_inval, 2) + (g_invalidated ? " : TOUCHÉE, signaux bloqués dans ce sens" : " : intacte") : "Pas d'invalidation",
-         g_invalidated ? C'242,54,69' : C'120,123,134');
-   Label(PFX_UI + "4", 68, NearestZones(), C'120,123,134');
-   string calc = "";
-   if(CalcAlive())
-     {
-      int block = CalcBlock();
-      calc = block > 0 ? " · Calculateur à l'arrêt : " + CalcBlockText(block)
-                       : " · Calculateur relié, risque " + Fr(GlobalVariableGet(Bridge("calc_risk")), 2) + " $";
-     }
-   Label(PFX_UI + "5", 84, "Signaux : " + (InpSignals ? IntegerToString(g_signalCount) + " aujourd'hui · aucun ordre passé" : "désactivés") + calc,
-         CalcBlock() > 0 ? C'242,54,69' : C'120,123,134');
-   // État : coupé en deux lignes si besoin.
-   string st = g_status, st2 = "";
-   if(StringLen(st) > 62)
-     {
-      int cut = 62;
-      while(cut > 30 && StringGetCharacter(st, cut) != ' ')
-         cut--;
-      st2 = StringSubstr(st, cut + 1, 62);
-      st  = StringSubstr(st, 0, cut);
-     }
-   Label(PFX_UI + "6", 100, st, C'120,123,134');
-   Label(PFX_UI + "7", 116, st2, C'120,123,134');
-   int bw = (int)MathMax(Dp(460), g_uiW + Dp(16));   // le cadre s'élargit plutôt que de laisser déborder
-   if(ObjectGetInteger(0, bg, OBJPROP_XSIZE) != bw)
-      ObjectSetInteger(0, bg, OBJPROP_XSIZE, bw);
-   ChartRedraw();
-  }
-
-//--- Zones de Claude les plus proches du prix, au-dessus et en dessous (utile quand elles sont hors de l'écran).
-string NearestZones()
-  {
+   above = "-"; below = "-"; inside = "";
    if(!g_planOk)
-      return "";
+      return;
    double px = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    int up = -1, dn = -1;
    for(int i = 0; i < ArraySize(g_zones); i++)
      {
       if(g_zones[i].state == "cassee")
          continue;
+      if(g_zones[i].lo <= px && g_zones[i].hi >= px)
+         inside = (g_zones[i].buy ? "achat " : "vente ") + Fr(g_zones[i].lo, 1) + " - " + Fr(g_zones[i].hi, 1);
       if(g_zones[i].lo > px && (up < 0 || g_zones[i].lo < g_zones[up].lo))
          up = i;
       if(g_zones[i].hi < px && (dn < 0 || g_zones[i].hi > g_zones[dn].hi))
          dn = i;
-      if(g_zones[i].lo <= px && g_zones[i].hi >= px)
-         return "Prix DANS la zone " + (g_zones[i].buy ? "d'achat " : "de vente ") + Fr(g_zones[i].lo, 1) + "-" + Fr(g_zones[i].hi, 1);
      }
-   string s = "Zones :";
    if(up >= 0)
-      s += " haut " + (g_zones[up].buy ? "achat " : "vente ") + Fr(g_zones[up].lo, 1) + " (+" + Fr(g_zones[up].lo - px, 1) + ")";
+      above = (g_zones[up].buy ? "achat " : "vente ") + Fr(g_zones[up].lo, 1) + " (+" + Fr(g_zones[up].lo - px, 1) + ")";
    if(dn >= 0)
-      s += " · bas " + (g_zones[dn].buy ? "achat " : "vente ") + Fr(g_zones[dn].hi, 1) + " (-" + Fr(px - g_zones[dn].hi, 1) + ")";
-   return s;
+      below = (g_zones[dn].buy ? "achat " : "vente ") + Fr(g_zones[dn].hi, 1) + " (−" + Fr(px - g_zones[dn].hi, 1) + ")";
+  }
+
+void DrawPanel()
+  {
+   double s   = g_k;
+   int    fs  = g_uiFs, fsB = 13;
+   int    W   = (int)(300 * s), pad = (int)(12 * s), rh = (int)(18 * s), gap = (int)(8 * s);
+   int    x0  = Dp(10), y0 = Dp(24);
+   int    xL  = x0 + pad, xR = x0 + W - pad, inner = W - 2 * pad;
+   g_uiInner = inner;
+   g_uiX     = x0;
+   string P   = PFX_UI + "P_";
+
+   UiRect(P + "BG", x0, y0, W, 100, UI_BG, UI_BORDER);
+
+   //--- En-tête
+   int y = y0 + (int)(9 * s);
+   UiText(P + "TITLE", xL, y, "Carnet XAU", clrWhite, fs + 2, FONT_TVB, ANCHOR_LEFT_UPPER);
+   UiText(P + "SUB", xR, y + (int)(3 * s), g_week == "" ? "plan de Claude" : "semaine du " + g_week, UI_MUTED, fs - 1, FONT_TV, ANCHOR_RIGHT_UPPER);
+   y += (int)(27 * s);
+
+   //--- Baissier | range | haussier, comme Sell | spread | Buy : le biais dominant en surbrillance
+   int  boxH = (int)(48 * s), boxW = (inner - gap) / 2, xB = xL + boxW + gap;
+   bool bear = g_planOk && g_bear > g_bull, bull = g_planOk && g_bull > g_bear;
+   UiRect(P + "BEARBG", xL, y, boxW, boxH, bear ? UI_SELL_ON : UI_SIDE, UI_BORDER);
+   UiText(P + "BEART", xL + (int)(10 * s), y + (int)(6 * s), "Baissier", bear ? clrWhite : UI_SELL_TX, fs, FONT_TV, ANCHOR_LEFT_UPPER);
+   UiText(P + "BEARP", xL + (int)(10 * s), y + (int)(21 * s), g_planOk ? IntegerToString(g_bear) + " %" : "-", bear ? clrWhite : UI_SELL_TX, fsB, FONT_TVB, ANCHOR_LEFT_UPPER);
+   UiRect(P + "BULLBG", xB, y, boxW, boxH, bull ? UI_BUY_ON : UI_SIDE, UI_BORDER);
+   UiText(P + "BULLT", xR - (int)(10 * s), y + (int)(6 * s), "Haussier", bull ? clrWhite : UI_BUY_TX, fs, FONT_TV, ANCHOR_RIGHT_UPPER);
+   UiText(P + "BULLP", xR - (int)(10 * s), y + (int)(21 * s), g_planOk ? IntegerToString(g_bull) + " %" : "-", bull ? clrWhite : UI_BUY_TX, fsB, FONT_TVB, ANCHOR_RIGHT_UPPER);
+   int spW = (int)(54 * s), spH = (int)(18 * s);
+   UiRect(P + "RNGBG", xL + boxW + gap / 2 - spW / 2, y + (boxH - spH) / 2, spW, spH, UI_BG, UI_BORDER);
+   UiText(P + "RNGT", xL + boxW + gap / 2, y + (boxH - spH) / 2 + (int)(3 * s), g_planOk ? "range " + IntegerToString(g_range) + " %" : "-", UI_TEXT, fs - 1, FONT_TV, ANCHOR_UPPER);
+   y += boxH + (int)(12 * s);
+
+   //--- Invalidation, zones, signaux : libellé à gauche, valeur à droite
+   string above, below, inside;
+   NearestZones(above, below, inside);
+   int    block = CalcBlock();
+   string calc  = !CalcAlive() ? "non relié" : (block > 0 ? "à l'arrêt : " + CalcBlockText(block)
+                                                          : "relié · risque " + Fr(GlobalVariableGet(Bridge("calc_risk")), 2) + " $");
+   string lab[6], val[6];
+   color  vc[6];
+   lab[0] = "Invalidation";
+   val[0] = g_inval > 0 ? Fr(g_inval, 2) + (g_invalidated ? " · touchée" : " · intacte") : "-";
+   vc[0]  = g_invalidated ? UI_RED : UI_TEXT;
+   lab[1] = inside != "" ? "Prix dans la zone" : "Zone au-dessus";
+   val[1] = inside != "" ? inside : above;
+   vc[1]  = inside != "" ? UI_ORANGE : UI_TEXT;
+   lab[2] = "Zone en dessous";
+   val[2] = below;
+   vc[2]  = UI_TEXT;
+   lab[3] = "Zones du plan";
+   val[3] = g_planOk ? IntegerToString(ArraySize(g_zones)) : "aucun plan";
+   vc[3]  = g_planOk ? UI_TEXT : UI_ORANGE;
+   lab[4] = "Signaux aujourd'hui";
+   val[4] = InpSignals ? IntegerToString(g_signalCount) + " · aucun ordre passé" : "désactivés";
+   vc[4]  = UI_TEXT;
+   lab[5] = "Calculateur";
+   val[5] = calc;
+   vc[5]  = block > 0 ? UI_RED : (CalcAlive() ? UI_GREEN : UI_MUTED);
+   int infoH = 6 * rh + (int)(10 * s);
+   int ix = xL + (int)(10 * s), ixr = xR - (int)(10 * s);
+   UiRect(P + "INFOBG", xL, y, inner, infoH, UI_INFO_BG, UI_INFO_BG);
+   for(int i = 0; i < 6; i++)
+     {
+      int yy = y + (int)(7 * s) + i * rh;
+      UiText(P + "L" + IntegerToString(i), ix, yy, lab[i], UI_MUTED, fs, FONT_TV, ANCHOR_LEFT_UPPER);
+      UiText(P + "R" + IntegerToString(i), ixr, yy, FitPx(val[i], (int)(inner * 0.58), fs), vc[i], fs, FONT_TV, ANCHOR_RIGHT_UPPER);
+     }
+   y += infoH + (int)(10 * s);
+
+   //--- Statut
+   int    eh  = (int)(26 * s);
+   color  stc = UI_MUTED, stb = UI_TINT_N;
+   if(!g_planOk)                        { stc = UI_ORANGE; stb = UI_TINT_O; }
+   if(g_invalidated)                    { stc = UI_RED;    stb = UI_TINT_R; }
+   if(StringFind(g_status, "BUY") == 0 || StringFind(g_status, "SELL") == 0) { stc = UI_GREEN; stb = UI_TINT_G; }
+   UiRect(P + "STBG", xL, y, inner, eh, stb, stb);
+   UiText(P + "ST", xL + (int)(8 * s), y + (int)(6 * s), FitPx(g_status, inner - (int)(16 * s), fs), stc, fs, FONT_TV, ANCHOR_LEFT_UPPER);
+   y += eh + pad;
+
+   ObjectSetInteger(0, P + "BG", OBJPROP_YSIZE, y - y0);
+   ChartRedraw();
   }
 
 //+------------------------------------------------------------------+
@@ -1999,21 +2176,10 @@ void ShowSignal(bool buy, string kind, string setup, CxZone &z, double entry, do
    g_tracks[k].opened  = (kind == "LIMIT") ? (datetime)0 : TimeCurrent();
    SaveTracks();
 
-   ObjectCreate(0, id + "_A", buy ? OBJ_ARROW_BUY : OBJ_ARROW_SELL, 0, t, entry);
-   ObjectSetInteger(0, id + "_A", OBJPROP_WIDTH, 3);
-   ObjBase(id + "_A");
    // Position dessinée : objectif en vert, stop en rouge (comme l'outil position longue / courte).
-   Rect(id + "_TP", t, entry, t2, tp, Blend(ChartBg(), C'8,153,129', 0.20), "Objectif " + Fr(tp, 2));
-   Rect(id + "_SL", t, entry, t2, sl, Blend(ChartBg(), C'242,54,69', 0.20), "Stop " + Fr(sl, 2));
    double p2r = buy ? entry + 2 * stop : entry - 2 * stop;
-   ObjectCreate(0, id + "_2R", OBJ_TREND, 0, t, p2r, t2, p2r);
-   ObjectSetInteger(0, id + "_2R", OBJPROP_STYLE, STYLE_DOT);
-   ObjectSetInteger(0, id + "_2R", OBJPROP_COLOR, clrSeaGreen);
-   ObjectSetInteger(0, id + "_2R", OBJPROP_RAY_RIGHT, false);
-   ObjBase(id + "_2R");
-   Text(id + "_T", t, buy ? tp : sl, label + " " + Fr(lot, 2) + " lot · SL " + Fr(sl, 2) + " · TP " + Fr(tp, 2) + " (" + Fr(rr, 1) + "R) S" + setup,
-        buy ? C'31,122,90' : C'178,58,46', 9);
-   ChartRedraw();
+   DrawAdd(id, t, t2, buy, entry, sl, tp, p2r,
+           label + " " + Fr(lot, 2) + " lot · SL " + Fr(sl, 2) + " · TP " + Fr(tp, 2) + " (" + Fr(rr, 1) + "R) S" + setup);
 
    int    block = CalcBlock();
    string note  = block > 0 ? "Calculateur à l'arrêt (" + CalcBlockText(block) + ") : ne pas prendre."
@@ -2056,12 +2222,7 @@ void ShowRetest(bool buy, string setup, CxZone &z, double entry, double sl, doub
    g_tracks[k].expires = TimeCurrent() + g_limitMin * 60;
    g_tracks[k].opened  = 0;
    SaveTracks();
-   ObjectCreate(0, id + "_E", OBJ_TREND, 0, t, entry, t + 30 * 60, entry);
-   ObjectSetInteger(0, id + "_E", OBJPROP_STYLE, STYLE_DOT);
-   ObjectSetInteger(0, id + "_E", OBJPROP_COLOR, buy ? clrSeaGreen : clrIndianRed);
-   ObjectSetInteger(0, id + "_E", OBJPROP_RAY_RIGHT, false);
-   ObjectSetString(0, id + "_E", OBJPROP_TOOLTIP, "Retour FVG " + Fr(entry, 2));
-   ObjBase(id + "_E");
+   DrawAdd(id, t, t + 30 * 60, buy, entry, sl, tp, 0, "Retour FVG " + Fr(entry, 2));
    SendEvent("{\"type\":\"signal\",\"variant\":true,\"ref\":" + JsonText(ref) + ",\"kind\":\"retest\",\"side\":\"" + (buy ? "buy" : "sell") + "\",\"setup\":\"" + setup + "\",\"zone\":"
              + JsonText(z.type + " " + z.tf + " " + Num(z.lo, 2) + "-" + Num(z.hi, 2)) + ",\"entry\":" + Num(entry, 2) + ",\"sl\":" + Num(sl, 2)
              + ",\"tp\":" + Num(tp, 2) + ",\"lot\":" + Num(lot, 2) + ",\"rr\":" + Num(rr, 2) + ",\"stop\":" + Num(stop, 2)
