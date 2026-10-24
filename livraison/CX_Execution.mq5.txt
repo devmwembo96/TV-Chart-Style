@@ -15,7 +15,7 @@
 //| TradingView.                                                     |
 //+------------------------------------------------------------------+
 #property copyright   "Portage de CX Écran 2 · Exécution (TradingFinder, LuxAlgo, JPT, fadi)"
-#property version     "1.03"
+#property version     "1.04"
 #property description "CX Exécution : structure, liquidité, EQH/EQL, IMFVG, LDZ, FVG Sessions et ICT HTF FVGs, au rendu TradingView."
 #property indicator_chart_window
 #property indicator_buffers 0
@@ -158,14 +158,20 @@ input int    buffer_sp      = 6;              // Spacing between timeframes
 input group "Alertes (à la clôture de la bougie)"
 input bool   AlPopup     = true;   // Fenêtre et son MT5
 input bool   AlPush      = true;   // Notification mobile (MetaQuotes ID)
-input bool   AlHtfNew    = true;   // ICT HTF : nouveau FVG
+input bool   AlSessions    = true;            // Alertes seulement pendant les séances ci-dessous
+input bool   AlLondon      = true;            // Séance de Londres
+input string AlLondonHours = "08:00-11:00";   // Heures de Londres (heure de Londres)
+input bool   AlNewYork     = true;            // Séance de New York
+input string AlNYHours     = "08:30-11:30";   // Heures de New York (heure de New York)
+input ENUM_TIMEFRAMES AlHtfMin = PERIOD_H1;   // ICT HTF : unité minimale des alertes
 input bool   AlHtfTouch  = true;   // ICT HTF : prix entre dans un FVG affiché
-input bool   AlHtfMitig  = true;   // ICT HTF : FVG affiché comblé
-input bool   AlZone      = true;   // LDZ : nouvelle zone BSL / SSL
+input bool   AlHtfNew    = false;  // ICT HTF : nouveau FVG
+input bool   AlHtfMitig  = false;  // ICT HTF : FVG affiché comblé
 input bool   AlSweep     = true;   // LDZ : BSL / SSL SWEEP
 input bool   AlReversal  = true;   // LDZ : signal BUY / SELL
-input bool   AlEqual     = true;   // EQH / EQL
-input bool   AlFvgSess   = true;   // FVG Sessions : nouveau, comblé, prix dedans, moyenne croisée
+input bool   AlZone      = false;  // LDZ : nouvelle zone BSL / SSL
+input bool   AlEqual     = false;  // EQH / EQL
+input bool   AlFvgSess   = false;  // FVG Sessions : nouveau, comblé, prix dedans, moyenne croisée
 input group "MT5"
 input int    InpMaxBars = 5000;               // Bougies calculées (TradingView : 5 000)
 input string InpFont    = "Trebuchet MS";     // Police (celle de TradingView)
@@ -1354,7 +1360,7 @@ void CheckMitigated(CState &S, SImb &arr[], int t, int k)
       if(mit)
         {
          if(S.BOk(arr[i].box))
-            Ev(AlHtfMitig, "FVG " + HtfText(HtfTf(k)) + (o < c ? " haussier" : " baissier") + " comblé " + Px2(MathMin(o, c)) + "-" + Px2(MathMax(o, c)));
+            Ev(AlHtfMitig && HtfAlertTf(k), "FVG " + HtfText(HtfTf(k)) + (o < c ? " haussier" : " baissier") + " comblé " + Px2(MathMin(o, c)) + "-" + Px2(MathMax(o, c)));
          if(!mitigated_show) { ImbDelete(S, arr[i]); RemoveAt(arr, i); }
          else arr[i].mit_time = (double)gT[t];
         }
@@ -1415,7 +1421,7 @@ int ProcessHtf(CState &S, SImb &arr[], int k, int t)
                if(ArraySize(arr) == 0 || arr[0].open_time < t2)
                  {
                   AddImbalance(S, arr, o, c, t2);
-                  Ev(AlHtfNew, "Nouveau FVG " + HtfText(HtfTf(k)) + (o < c ? " haussier " : " baissier ") + Px2(MathMin(o, c)) + "-" + Px2(MathMax(o, c)));
+                  Ev(AlHtfNew && HtfAlertTf(k), "Nouveau FVG " + HtfText(HtfTf(k)) + (o < c ? " haussier " : " baissier ") + Px2(MathMin(o, c)) + "-" + Px2(MathMax(o, c)));
                  }
               }
            }
@@ -1431,7 +1437,7 @@ int ProcessHtf(CState &S, SImb &arr[], int k, int t)
            {
             arr[i].touched = true;
             if(S.BOk(arr[i].box))
-               Ev(AlHtfTouch, "Prix dans le FVG " + HtfText(HtfTf(k)) + (arr[i].open < arr[i].close ? " haussier " : " baissier ") + Px2(lo) + "-" + Px2(hi));
+               Ev(AlHtfTouch && HtfAlertTf(k), "Prix dans le FVG " + HtfText(HtfTf(k)) + (arr[i].open < arr[i].close ? " haussier " : " baissier ") + Px2(lo) + "-" + Px2(hi));
            }
         }
      }
@@ -1556,8 +1562,56 @@ int OnCalculate(const int rates_total, const int prev_calculated, const datetime
    return rates_total;
   }
 
+//--- Séances de Londres et de New York, heure locale, changement d'heure compris
+datetime NthSunday(int year, int mon, int nth)      // nth = 0 : dernier dimanche du mois
+  {
+   MqlDateTime d; d.year = year; d.mon = mon; d.day = 1; d.hour = 0; d.min = 0; d.sec = 0;
+   datetime first = StructToTime(d);
+   MqlDateTime f; TimeToStruct(first, f);
+   int sun = (7 - f.day_of_week) % 7;                 // premier dimanche
+   if(nth > 0) return first + (sun + 7 * (nth - 1)) * 86400;
+   datetime t = first + sun * 86400;
+   MqlDateTime n;
+   while(true) { TimeToStruct(t + 7 * 86400, n); if(n.mon != mon) break; t += 7 * 86400; }
+   return t;
+  }
+//--- heure de Londres et de New York (minutes depuis minuit) d'une heure UTC
+int LocalMinutes(datetime utc, bool london)
+  {
+   MqlDateTime u; TimeToStruct(utc, u);
+   int off;
+   if(london)
+      off = (utc >= NthSunday(u.year, 3, 0) + 3600 && utc < NthSunday(u.year, 10, 0) + 3600) ? 60 : 0;
+   else
+      off = (utc >= NthSunday(u.year, 3, 2) + 7 * 3600 && utc < NthSunday(u.year, 11, 1) + 6 * 3600) ? -240 : -300;
+   int m = u.hour * 60 + u.min + off;
+   return (m + 1440) % 1440;
+  }
+bool InHours(int m, string hours)                    // « 08:00-11:00 »
+  {
+   string p[];
+   if(StringSplit(hours, '-', p) != 2) return true;
+   string a[], b[];
+   if(StringSplit(p[0], ':', a) != 2 || StringSplit(p[1], ':', b) != 2) return true;
+   int s = (int)StringToInteger(a[0]) * 60 + (int)StringToInteger(a[1]);
+   int e = (int)StringToInteger(b[0]) * 60 + (int)StringToInteger(b[1]);
+   return s <= e ? (m >= s && m < e) : (m >= s || m < e);
+  }
+//--- barClose : heure du serveur de la clôture de la bougie
+bool InSession(datetime barClose)
+  {
+   if(!AlSessions) return true;
+   int offset = (int)MathRound((double)(TimeCurrent() - TimeGMT()) / 1800.0) * 1800;   // décalage du serveur
+   datetime utc = barClose - offset;
+   return (AlLondon && InHours(LocalMinutes(utc, true), AlLondonHours))
+       || (AlNewYork && InHours(LocalMinutes(utc, false), AlNYHours));
+  }
+
+bool HtfAlertTf(int k) { return PeriodSeconds(HtfTf(k)) >= PeriodSeconds(AlHtfMin); }
+
 void SendAlert(string msg, datetime bar)
   {
+   if(!InSession(bar + gPer)) return;
    string tf = gPer < 3600 ? "M" + IntegerToString(gPer / 60) : gPer < 86400 ? "H" + IntegerToString(gPer / 3600)
                : gPer == 86400 ? "D1" : gPer == 604800 ? "W1" : "MN1";
    string txt = "CX Exécution " + _Symbol + " " + tf + " " + TimeToString(bar, TIME_MINUTES) + " : " + msg;

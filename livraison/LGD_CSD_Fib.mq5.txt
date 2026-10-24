@@ -6,7 +6,7 @@
 //| retrouver la transparence et les étiquettes de TradingView.      |
 //+------------------------------------------------------------------+
 #property copyright   "MPL 2.0 — portage de l'indicateur TradingView LGD+CSD+Fib"
-#property version     "1.03"
+#property version     "1.04"
 #property description "Liquidity Grab, CSD & Focused Fibonacci (LGD+CSD+Fib), affichage au style TradingView."
 #property indicator_chart_window
 #property indicator_buffers 0
@@ -38,6 +38,11 @@ input group "Alertes (à la clôture de la bougie)"
 input bool            AlCsd   = true;    // Alerte à chaque CSD
 input bool            AlPopup = true;    // Fenêtre et son MT5
 input bool            AlPush  = true;    // Notification mobile (MetaQuotes ID)
+input bool   AlSessions    = true;            // Alertes seulement pendant les séances ci-dessous
+input bool   AlLondon      = true;            // Séance de Londres
+input string AlLondonHours = "08:00-11:00";   // Heures de Londres (heure de Londres)
+input bool   AlNewYork     = true;            // Séance de New York
+input string AlNYHours     = "08:30-11:30";   // Heures de New York (heure de New York)
 input group "MT5"
 input int             InpMaxBars   = 5000;       // Bougies calculées
 input string          InpFont      = "Trebuchet MS"; // Police (celle de TradingView)
@@ -87,6 +92,51 @@ template<typename T> void DropFirst(T &arr[], int k)
    for(int i = k; i < n; i++)
       arr[i - k] = arr[i];
    ArrayResize(arr, n - k, 256);
+  }
+
+//--- Séances de Londres et de New York, heure locale, changement d'heure compris
+datetime NthSunday(int year, int mon, int nth)      // nth = 0 : dernier dimanche du mois
+  {
+   MqlDateTime d; d.year = year; d.mon = mon; d.day = 1; d.hour = 0; d.min = 0; d.sec = 0;
+   datetime first = StructToTime(d);
+   MqlDateTime f; TimeToStruct(first, f);
+   int sun = (7 - f.day_of_week) % 7;                 // premier dimanche
+   if(nth > 0) return first + (sun + 7 * (nth - 1)) * 86400;
+   datetime t = first + sun * 86400;
+   MqlDateTime n;
+   while(true) { TimeToStruct(t + 7 * 86400, n); if(n.mon != mon) break; t += 7 * 86400; }
+   return t;
+  }
+//--- heure de Londres et de New York (minutes depuis minuit) d'une heure UTC
+int LocalMinutes(datetime utc, bool london)
+  {
+   MqlDateTime u; TimeToStruct(utc, u);
+   int off;
+   if(london)
+      off = (utc >= NthSunday(u.year, 3, 0) + 3600 && utc < NthSunday(u.year, 10, 0) + 3600) ? 60 : 0;
+   else
+      off = (utc >= NthSunday(u.year, 3, 2) + 7 * 3600 && utc < NthSunday(u.year, 11, 1) + 6 * 3600) ? -240 : -300;
+   int m = u.hour * 60 + u.min + off;
+   return (m + 1440) % 1440;
+  }
+bool InHours(int m, string hours)                    // « 08:00-11:00 »
+  {
+   string p[];
+   if(StringSplit(hours, '-', p) != 2) return true;
+   string a[], b[];
+   if(StringSplit(p[0], ':', a) != 2 || StringSplit(p[1], ':', b) != 2) return true;
+   int s = (int)StringToInteger(a[0]) * 60 + (int)StringToInteger(a[1]);
+   int e = (int)StringToInteger(b[0]) * 60 + (int)StringToInteger(b[1]);
+   return s <= e ? (m >= s && m < e) : (m >= s || m < e);
+  }
+//--- barClose : heure du serveur de la clôture de la bougie
+bool InSession(datetime barClose)
+  {
+   if(!AlSessions) return true;
+   int offset = (int)MathRound((double)(TimeCurrent() - TimeGMT()) / 1800.0) * 1800;   // décalage du serveur
+   datetime utc = barClose - offset;
+   return (AlLondon && InHours(LocalMinutes(utc, true), AlLondonHours))
+       || (AlNewYork && InHours(LocalMinutes(utc, false), AlNYHours));
   }
 
 //--- Alertes : collectées pendant le calcul d'une bougie clôturée en direct
@@ -576,7 +626,7 @@ int OnCalculate(const int rates_total, const int prev_calculated, const datetime
       gAlertBuf = "";
       bool okBar = ProcessBar(gCommit, gProcessed);
       gAlertLive = false;
-      if(okBar && gAlertBuf != "")
+      if(okBar && gAlertBuf != "" && InSession(gT[gProcessed] + PeriodSeconds(PERIOD_CURRENT)))
         {
          string txt = "LGD+CSD+Fib " + _Symbol + " " + TimeToString(gT[gProcessed], TIME_MINUTES) + " : " + gAlertBuf;
          if(AlPopup) Alert(txt);
