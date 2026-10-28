@@ -1,0 +1,966 @@
+﻿//+------------------------------------------------------------------+
+//| CX_Gravity.mq5                                                   |
+//| Zones de support / résistance issues d'événements de volume      |
+//| (réimplémentation originale d'après une description publique) :  |
+//|  - Daily Anchor Zone : plage high/low de la fenêtre de clôture   |
+//|    du jour (heure de New York), ancrée au temps, identique sur   |
+//|    toutes les unités, prolongée jusqu'à l'ancre suivante         |
+//|  - Repel Zones : bougies à pic de participation anormal          |
+//|    (volume > moyenne + k écarts-types des N bougies précédentes) |
+//|  - Session Volume Zones Asia / NY : bougie de participation      |
+//|    maximale de la séance, zone créée à la clôture de la séance   |
+//|  - cycle de vie : élagage des chevauchements (même type, on      |
+//|    garde la plus récente), suppression après traversée des deux  |
+//|    côtés (clôtures confirmées), affichage de proximité (ATR)     |
+//|  - échelle de Fibonacci optionnelle depuis l'ancre du jour       |
+//| Volume : XAUUSD sur MT5 n'a pas de volume réel ; tout le script  |
+//| utilise le volume en ticks (tick_volume), qui mesure l'activité  |
+//| (nombre de cotations) et non les lots échangés.                  |
+//| Zones confirmées sur bougies clôturées : pas de repaint.         |
+//| Dessin en CCanvas, police Trebuchet MS, rendu TradingView.       |
+//+------------------------------------------------------------------+
+#property copyright   "CX Gravity"
+#property version     "1.00"
+#property description "CX Gravity : zones d'ancre quotidienne, Repel et Asia / NY tirées du volume en ticks, avec cycle de vie et échelle de Fibonacci."
+#property indicator_chart_window
+#property indicator_buffers 0
+#property indicator_plots   0
+
+#include <Canvas\Canvas.mqh>
+
+enum ENUM_LSTYLE { sol = 0, dsh = 1, dot = 2 };
+enum ENUM_TSIZE  { tiny = 0, small = 1, normal = 2 };
+enum ENUM_ZMODE  { Wick = 0, Body = 1 };
+
+input group "Daily Anchor Zone"
+input bool        AnShow    = true;              // Afficher la zone d'ancre du jour
+input string      AnHours   = "13:15-13:30";     // Fenêtre de clôture (heure de New York ; COMEX or : 13:15-13:30, indices US : 15:45-16:00)
+input bool        AnKeep    = true;              // Garder les ancres précédentes (arrêtées à l'ancre suivante)
+input color       AnColor   = C'255,152,0';      // Couleur
+input int         AnFillT   = 80;                // Transparence du remplissage
+input bool        AnBorder  = true;              // Bordure
+input bool        AnMid     = true;              // Ligne médiane
+input ENUM_LSTYLE AnMidSt   = dsh;               // Style de la médiane
+input group "Repel Zones"
+input bool        RpShow    = true;              // Afficher les Repel Zones
+input int         RpLen     = 50;                // Bougies de référence (moyenne / écart-type du volume)
+input double      RpSens    = 3.0;               // Sensibilité : écarts-types au-dessus de la moyenne
+input ENUM_ZMODE  RpMode    = Wick;              // Zone : mèches (high/low) ou corps
+input bool        RpReset   = false;             // Effacer les Repel Zones à chaque nouveau jour (17:00 New York)
+input color       RpColor   = C'8,153,129';      // Couleur
+input int         RpFillT   = 85;                // Transparence du remplissage
+input bool        RpBorder  = true;              // Bordure
+input bool        RpMid     = false;             // Ligne médiane
+input ENUM_LSTYLE RpMidSt   = dsh;               // Style de la médiane
+input group "Asia / NY Zones"
+input ENUM_ZMODE  SsMode    = Wick;              // Zone : mèches (high/low) ou corps de la bougie de volume maximal
+input bool        AsShow    = true;              // Afficher la zone Asia
+input string      AsHours   = "19:00-03:00";     // Séance Asia (heure de New York)
+input color       AsColor   = C'41,98,255';      // Couleur Asia
+input int         AsFillT   = 85;                // Transparence Asia
+input bool        AsBorder  = true;              // Bordure Asia
+input bool        AsMid     = true;              // Médiane Asia
+input ENUM_LSTYLE AsMidSt   = dsh;               // Style de la médiane Asia
+input bool        NyShow    = true;              // Afficher la zone NY
+input string      NyHours   = "08:00-16:00";     // Séance NY (heure de New York)
+input color       NyColor   = C'156,39,176';     // Couleur NY
+input int         NyFillT   = 85;                // Transparence NY
+input bool        NyBorder  = true;              // Bordure NY
+input bool        NyMid     = true;              // Médiane NY
+input ENUM_LSTYLE NyMidSt   = dsh;               // Style de la médiane NY
+input bool        ZText     = true;              // Nom des zones
+input group "Zone Visibility"
+input bool        VisNear   = true;              // Seulement les zones proches du prix
+input int         VisAtrLen = 14;                // ATR Longueur
+input double      VisAtrMul = 6.0;               // Distance maximale (× ATR)
+input group "Auto-Cleanup"
+input bool        ClAnchor  = false;             // Ancre : supprimer après traversée des deux côtés
+input bool        ClRepel   = true;              // Repel : supprimer après traversée des deux côtés
+input bool        ClSess    = true;              // Asia / NY : supprimer après traversée des deux côtés
+input group "Fibonacci Levels"
+input bool        FbShow    = false;             // Échelle de Fibonacci depuis l'ancre du jour
+input string      FbLevels  = "0.5,1,1.618,2,2.618,3,4.236"; // Extensions (multiples de la plage de l'ancre)
+input color       FbColor   = C'120,123,134';    // Couleur
+input int         FbTransp  = 20;                // Transparence
+input ENUM_LSTYLE FbStyle   = dot;               // Style
+input bool        FbLabels  = true;              // Étiquettes
+input ENUM_TSIZE  FbSize    = small;             // Taille des étiquettes
+input int         FbOffset  = 10;                // Décalage des étiquettes (bougies à droite)
+input group "Alertes (à la clôture de la bougie)"
+input bool   AlPopup     = true;                 // Fenêtre et son MT5
+input bool   AlPush      = true;                 // Notification mobile (MetaQuotes ID)
+input bool   AlSessions    = true;               // Alertes seulement pendant les séances ci-dessous
+input bool   AlLondon      = true;               // Séance de Londres
+input string AlLondonHours = "08:00-11:00";      // Heures de Londres (heure de Londres)
+input bool   AlNewYork     = true;               // Séance de New York
+input string AlNYHours     = "08:30-11:30";      // Heures de New York (heure de New York)
+input bool   AlInAnchor  = true;                 // Prix entre dans la zone d'ancre
+input bool   AlInRepel   = true;                 // Prix entre dans une Repel Zone
+input bool   AlInSess    = true;                 // Prix entre dans une zone Asia / NY
+input bool   AlNewAnchor = true;                 // Nouvelle zone d'ancre
+input bool   AlNewSess   = true;                 // Nouvelle zone Asia / NY
+input bool   AlNewRepel  = false;                // Nouvelle Repel Zone
+input bool   AlConsumed  = false;                // Zone traversée des deux côtés (supprimée)
+input group "MT5"
+input bool   InpSrvNY   = true;                  // Le serveur suit l'heure d'été américaine (FundedNext : oui)
+input int    InpFineDays = 400;                  // Unités > M5 : jours d'historique M5 lus pour l'ancre et les séances
+input int    InpMaxBars = 5000;                  // Bougies calculées (TradingView : 5 000)
+input string InpFont    = "Trebuchet MS";        // Police (celle de TradingView)
+
+#define PC_GRAY   C'120,123,134'
+#define NA        EMPTY_VALUE
+#define MAX_OBJ   500
+
+enum ENUM_LBLSTYLE { LS_DOWN = 0, LS_UP = 1, LS_LEFT = 2 };
+enum ENUM_ZTYPE    { ZT_ANCHOR = 0, ZT_REPEL = 1, ZT_ASIA = 2, ZT_NY = 3 };
+
+//--- Alertes : collectées pendant le calcul d'une bougie clôturée en direct, envoyées ensemble
+bool   gAlertLive = false;
+string gAlertBuf  = "";
+int    gCurBar    = 0;
+string Px2(double p) { return DoubleToString(p, _Digits); }
+void   Ev(bool on, string msg)
+  {
+   if(!on || !gAlertLive) return;
+   if(StringFind(gAlertBuf, msg) >= 0) return;
+   gAlertBuf += (gAlertBuf == "" ? "" : " · ") + msg;
+  }
+
+uint A(const color c, const int transp)
+  {
+   return ColorToARGB(c, (uchar)MathRound(255.0 * (100 - MathMax(0, MathMin(100, transp))) / 100.0));
+  }
+
+//--- Étiquette (label de Pine). x : indice de bougie, ou heure si xt.
+struct DLabel { double x; double y; string text; uint bg; uint tc; int style; int size; bool xt; bool sym; bool alive; };
+//--- Zone suivie. Abscisses en heures (zones ancrées au temps). tEnd = 0 : prolongée à droite.
+struct SZone  { int type; double top; double bot; datetime t1; datetime tEnd; bool up; bool dn; bool touch; bool alive; int born; };
+//--- Fenêtre d'ancre ou séance terminée, disponible à tEv (clôture de sa dernière bougie)
+struct SEv    { int type; double top; double bot; datetime t1; datetime tEv; int dir; long vol; };
+
+template<typename T> void Push(T &a[], const T &v) { int n = ArraySize(a); ArrayResize(a, n + 1, 64); a[n] = v; }
+
+//+------------------------------------------------------------------+
+//| État du script (bougies clôturées seulement)                     |
+//+------------------------------------------------------------------+
+class CState
+  {
+public:
+   SZone    z[];
+   int      dead;
+   int      evNext;                       // prochain événement de gEv à appliquer
+   double   fibTop, fibBot;               // plage de la dernière ancre
+   datetime fibT1;
+   int      fibDir;
+
+   void Reset()
+     {
+      ArrayFree(z);
+      dead = 0; evNext = 0;
+      fibTop = fibBot = NA; fibT1 = 0; fibDir = 0;
+     }
+   void Kill(int i) { if(z[i].alive) { z[i].alive = false; dead++; } }
+   //--- retire les zones supprimées du tableau (aucune référence par indice ailleurs)
+   void Compact()
+     {
+      if(dead < 200) return;
+      int n = ArraySize(z), k = 0;
+      for(int i = 0; i < n; i++)
+         if(z[i].alive) { if(k != i) z[k] = z[i]; k++; }
+      ArrayResize(z, k, 64);
+      dead = 0;
+     }
+  };
+
+//+------------------------------------------------------------------+
+//| Données M5 pour l'ancre et les séances quand le graphique > M5   |
+//+------------------------------------------------------------------+
+class CFine
+  {
+public:
+   datetime T[]; double O[], H[], L[], C[]; long V[];
+   int      n;
+   bool     ok;
+   //--- need : heure à partir de laquelle ces données doivent couvrir le graphique
+   bool Load(datetime from, datetime need)
+     {
+      MqlRates r[];
+      int k = CopyRates(_Symbol, PERIOD_M5, from, TimeCurrent() + 300, r);
+      if(k <= 0) return false;           // données pas prêtes : on garde les précédentes
+      n = k;
+      ArrayResize(T, n); ArrayResize(O, n); ArrayResize(H, n); ArrayResize(L, n); ArrayResize(C, n); ArrayResize(V, n);
+      for(int i = 0; i < n; i++)
+        { T[i] = r[i].time; O[i] = r[i].open; H[i] = r[i].high; L[i] = r[i].low; C[i] = r[i].close; V[i] = r[i].tick_volume; }
+      ok = true;
+      //--- historique encore en téléchargement : le terminal n'a que les bougies récentes
+      if(T[0] > need)
+        {
+         datetime first = (datetime)SeriesInfoInteger(_Symbol, PERIOD_M5, SERIES_FIRSTDATE);
+         if(first == 0 || first < need)
+            return false;
+        }
+      return true;
+     }
+  };
+
+//--- Données du graphique (fenêtre de InpMaxBars bougies, indice 0 = la plus ancienne)
+double   gO[], gH[], gL[], gC[], gATR[];
+long     gV[];
+datetime gT[];
+int      gN = 0, gBase = 0, gTotal = 0, gProcessed = -1, gPer = 60;
+CState   gCommit;
+CFine    gFine;
+SEv      gEv[];
+double   gFib[];
+double   gDpi = 1.0;
+int      gSrvOff = 0, gSrvDelta = 0;     // décalage serveur - UTC, et serveur - New York (secondes)
+
+//--- Canvas
+CCanvas  gCv;
+string   gName;
+bool     gCvOk = false;
+int      gW = 0, gHh = 0;
+uint     gLastRender = 0;
+bool     gDirty = false;
+
+//+------------------------------------------------------------------+
+//| Réglages par type de zone                                        |
+//+------------------------------------------------------------------+
+color  ZColor(int k)  { return k == ZT_ANCHOR ? AnColor : k == ZT_REPEL ? RpColor : k == ZT_ASIA ? AsColor : NyColor; }
+int    ZFillT(int k)  { return k == ZT_ANCHOR ? AnFillT : k == ZT_REPEL ? RpFillT : k == ZT_ASIA ? AsFillT : NyFillT; }
+bool   ZBorder(int k) { return k == ZT_ANCHOR ? AnBorder : k == ZT_REPEL ? RpBorder : k == ZT_ASIA ? AsBorder : NyBorder; }
+bool   ZMid(int k)    { return k == ZT_ANCHOR ? AnMid : k == ZT_REPEL ? RpMid : k == ZT_ASIA ? AsMid : NyMid; }
+int    ZMidSt(int k)  { return (int)(k == ZT_ANCHOR ? AnMidSt : k == ZT_REPEL ? RpMidSt : k == ZT_ASIA ? AsMidSt : NyMidSt); }
+bool   ZClean(int k)  { return k == ZT_ANCHOR ? ClAnchor : k == ZT_REPEL ? ClRepel : ClSess; }
+bool   ZAlIn(int k)   { return k == ZT_ANCHOR ? AlInAnchor : k == ZT_REPEL ? AlInRepel : AlInSess; }
+string ZName(int k)   { return k == ZT_ANCHOR ? "Daily" : k == ZT_REPEL ? "Repel" : k == ZT_ASIA ? "Asia" : "NY"; }
+
+//--- « 0.5,1,1.618 » -> gFib
+void ParseFib()
+  {
+   ArrayFree(gFib);
+   string p[];
+   int n = StringSplit(FbLevels, ',', p);
+   for(int i = 0; i < n; i++)
+     {
+      string s = p[i];
+      StringTrimLeft(s); StringTrimRight(s);
+      if(s == "") continue;
+      double v = StringToDouble(s);
+      if(v > 0) Push(gFib, v);
+     }
+  }
+
+//+------------------------------------------------------------------+
+int OnInit()
+  {
+   if(RpLen < 5 || RpSens <= 0 || VisAtrLen < 1 || VisAtrMul <= 0 || InpFineDays < 5 || InpMaxBars < 300)
+      return INIT_PARAMETERS_INCORRECT;
+   gDpi = MathMax(1.0, TerminalInfoInteger(TERMINAL_SCREEN_DPI) / 96.0);
+   gName = "CXGRV_" + IntegerToString(ChartID()) + "_" + IntegerToString(GetTickCount());
+   IndicatorSetString(INDICATOR_SHORTNAME, "CX Gravity");
+   ParseFib();
+   gProcessed = -1;
+   EventSetMillisecondTimer(100);
+   return INIT_SUCCEEDED;
+  }
+
+void OnDeinit(const int reason)
+  {
+   EventKillTimer();
+   if(gCvOk) gCv.Destroy();
+   gCvOk = false;
+   ChartRedraw();
+  }
+
+//+------------------------------------------------------------------+
+//| Heure de New York                                                |
+//+------------------------------------------------------------------+
+datetime NthSunday(int year, int mon, int nth)      // nth = 0 : dernier dimanche du mois
+  {
+   MqlDateTime d; d.year = year; d.mon = mon; d.day = 1; d.hour = 0; d.min = 0; d.sec = 0;
+   datetime first = StructToTime(d);
+   MqlDateTime f; TimeToStruct(first, f);
+   int sun = (7 - f.day_of_week) % 7;                 // premier dimanche
+   if(nth > 0) return first + (sun + 7 * (nth - 1)) * 86400;
+   datetime t = first + sun * 86400;
+   MqlDateTime n;
+   while(true) { TimeToStruct(t + 7 * 86400, n); if(n.mon != mon) break; t += 7 * 86400; }
+   return t;
+  }
+//--- heure de Londres et de New York (minutes depuis minuit) d'une heure UTC
+int LocalMinutes(datetime utc, bool london)
+  {
+   MqlDateTime u; TimeToStruct(utc, u);
+   int off;
+   if(london)
+      off = (utc >= NthSunday(u.year, 3, 0) + 3600 && utc < NthSunday(u.year, 10, 0) + 3600) ? 60 : 0;
+   else
+      off = (utc >= NthSunday(u.year, 3, 2) + 7 * 3600 && utc < NthSunday(u.year, 11, 1) + 6 * 3600) ? -240 : -300;
+   int m = u.hour * 60 + u.min + off;
+   return (m + 1440) % 1440;
+  }
+bool InHours(int m, string hours)                    // « 08:00-11:00 »
+  {
+   string p[];
+   if(StringSplit(hours, '-', p) != 2) return true;
+   string a[], b[];
+   if(StringSplit(p[0], ':', a) != 2 || StringSplit(p[1], ':', b) != 2) return true;
+   int s = (int)StringToInteger(a[0]) * 60 + (int)StringToInteger(a[1]);
+   int e = (int)StringToInteger(b[0]) * 60 + (int)StringToInteger(b[1]);
+   return s <= e ? (m >= s && m < e) : (m >= s || m < e);
+  }
+//--- « 13:15-13:30 » -> minutes de début et de fin
+bool ParseHours(string hours, int &s, int &e)
+  {
+   string p[];
+   if(StringSplit(hours, '-', p) != 2) return false;
+   string a[], b[];
+   if(StringSplit(p[0], ':', a) != 2 || StringSplit(p[1], ':', b) != 2) return false;
+   s = (int)StringToInteger(a[0]) * 60 + (int)StringToInteger(a[1]);
+   e = (int)StringToInteger(b[0]) * 60 + (int)StringToInteger(b[1]);
+   return s != e;
+  }
+//--- décalage de New York (secondes) d'une heure UTC ; bornes de l'heure d'été en cache par année
+int NyOffsetSec(datetime utc)
+  {
+   static int      cy = -1;
+   static datetime da = 0, db = 0;
+   MqlDateTime u; TimeToStruct(utc, u);
+   if(u.year != cy) { cy = u.year; da = NthSunday(cy, 3, 2) + 7 * 3600; db = NthSunday(cy, 11, 1) + 6 * 3600; }
+   return (utc >= da && utc < db) ? -4 * 3600 : -5 * 3600;
+  }
+//--- décalage du serveur, mesuré maintenant (TimeTradeServer avance aussi le week-end, sans tick)
+void SrvInit()
+  {
+   gSrvOff = (int)MathRound((double)(TimeTradeServer() - TimeGMT()) / 1800.0) * 1800;
+   gSrvDelta = gSrvOff - NyOffsetSec(TimeGMT());
+  }
+//--- heure de New York d'une heure du serveur. Serveur « clôture de New York » (FundedNext :
+//    UTC+2 l'hiver, UTC+3 l'été, aux dates américaines) : écart constant avec New York, juste
+//    aussi sur l'historique. Sinon : décalage actuel du serveur, changement d'heure de New York.
+datetime NyLocal(datetime srv)
+  {
+   if(InpSrvNY) return srv - gSrvDelta;
+   datetime utc = srv - gSrvOff;
+   return utc + NyOffsetSec(utc);
+  }
+int  NyMin(datetime srv) { long s = (long)NyLocal(srv); return (int)(((s % 86400) + 86400) % 86400 / 60); }
+//--- jour de cotation : change à 17:00 heure de New York (clôture quotidienne de l'or)
+long DayKey(datetime srv) { long s = (long)NyLocal(srv) + 7 * 3600; return (s >= 0) ? s / 86400 : (s - 86399) / 86400; }
+//--- la bougie [m, m + len) recoupe-t-elle la fenêtre [s, e) (minutes, fenêtre à cheval sur minuit admise)
+bool InWin(int m, int len, int s, int e)
+  {
+   if(s < e) return m < e && m + len > s;
+   return m + len > s || m < e;
+  }
+
+//+------------------------------------------------------------------+
+//| Outils de calcul                                                 |
+//+------------------------------------------------------------------+
+//--- ta.atr de Pine sur la fenêtre du graphique, de la bougie from à la fin
+void Atr(double &out[], int len, int from)
+  {
+   ArrayResize(out, gN);
+   for(int i = from; i < gN; i++)
+     {
+      double tr = (i == 0) ? gH[i] - gL[i] : MathMax(gH[i] - gL[i], MathMax(MathAbs(gH[i] - gC[i - 1]), MathAbs(gL[i] - gC[i - 1])));
+      if(i < len - 1) { out[i] = NA; continue; }
+      if(i == len - 1)
+        {
+         double s = 0;
+         for(int k = 0; k < len; k++)
+            s += (k == 0) ? gH[k] - gL[k] : MathMax(gH[k] - gL[k], MathMax(MathAbs(gH[k] - gC[k - 1]), MathAbs(gL[k] - gC[k - 1])));
+         out[i] = s / len;
+        }
+      else
+         out[i] = (out[i - 1] * (len - 1) + tr) / len;
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Fenêtres d'ancre et séances terminées (bougies fines : celles du |
+//| graphique jusqu'à M5, sinon M5). Une fenêtre se termine quand la |
+//| bougie suivante n'en fait plus partie : elle n'utilise que des   |
+//| bougies clôturées. Événements triés par heure de disponibilité.  |
+//+------------------------------------------------------------------+
+void BuildEvents(const datetime &T[], const double &O[], const double &H[], const double &L[], const double &C[], const long &V[], int n, int per)
+  {
+   ArrayResize(gEv, 0, 256);
+   int  s[4], e[4], fI[4], lI[4], pI[4];
+   bool on[4], act[4], part[4];
+   double hi[4], lo[4];
+   long pv[4];
+   for(int k = 0; k < 4; k++) { s[k] = e[k] = 0; fI[k] = lI[k] = pI[k] = 0; on[k] = act[k] = part[k] = false; hi[k] = lo[k] = 0; pv[k] = 0; }
+   int ws = 0, we = 0;
+   on[ZT_ANCHOR] = (AnShow || FbShow) && ParseHours(AnHours, ws, we); s[ZT_ANCHOR] = ws; e[ZT_ANCHOR] = we;
+   on[ZT_ASIA]   = AsShow && ParseHours(AsHours, ws, we);             s[ZT_ASIA] = ws;   e[ZT_ASIA] = we;
+   on[ZT_NY]     = NyShow && ParseHours(NyHours, ws, we);             s[ZT_NY] = ws;     e[ZT_NY] = we;
+   int len = MathMax(1, per / 60);
+   for(int i = 0; i < n; i++)
+     {
+      int m = NyMin(T[i]);
+      for(int k = 0; k < 4; k++)
+        {
+         if(!on[k]) continue;
+         bool in = InWin(m, len, s[k], e[k]);
+         bool cont = act[k] && in && (long)(T[i] - T[lI[k]]) < 6 * 3600;
+         if(act[k] && !cont)
+           {
+            //--- fenêtre terminée sur la bougie lI, disponible à sa clôture
+            act[k] = false;
+            if(!part[k])
+              {
+               SEv ev;
+               ev.type = k;
+               datetime te = T[lI[k]] + per;
+               if(T[i] < te) te = T[i];
+               ev.tEv = te;
+               ev.vol = pv[k];
+               if(k == ZT_ANCHOR)
+                 {
+                  ev.t1 = T[fI[k]]; ev.top = hi[k]; ev.bot = lo[k];
+                  ev.dir = C[lI[k]] >= O[fI[k]] ? 1 : -1;
+                 }
+               else
+                 {
+                  int j = pI[k];
+                  ev.t1 = T[j]; ev.dir = C[j] >= O[j] ? 1 : -1;
+                  if(SsMode == Body && MathMax(O[j], C[j]) > MathMin(O[j], C[j]))
+                    { ev.top = MathMax(O[j], C[j]); ev.bot = MathMin(O[j], C[j]); }
+                  else
+                    { ev.top = H[j]; ev.bot = L[j]; }
+                 }
+               Push(gEv, ev);
+              }
+           }
+         if(!in) continue;
+         if(!act[k])
+           {
+            act[k] = true; part[k] = (i == 0);        // fenêtre commencée avant les données : ignorée
+            fI[k] = i; hi[k] = H[i]; lo[k] = L[i]; pv[k] = V[i]; pI[k] = i;
+           }
+         else
+           {
+            hi[k] = MathMax(hi[k], H[i]); lo[k] = MathMin(lo[k], L[i]);
+            if(V[i] > pv[k]) { pv[k] = V[i]; pI[k] = i; }   // à égalité, la première
+           }
+         lI[k] = i;
+        }
+     }
+  }
+
+//--- source des fenêtres : graphique jusqu'à M5, sinon données M5
+bool LoadFine()
+  {
+   if(gPer <= 300)
+     {
+      BuildEvents(gT, gO, gH, gL, gC, gV, gN, gPer);
+      return true;
+     }
+   datetime need = TimeCurrent() - (datetime)InpFineDays * 86400;
+   if(need < gT[0]) need = gT[0];
+   bool ok = gFine.Load(need - 2 * 86400, need);
+   if(gFine.ok)
+      BuildEvents(gFine.T, gFine.O, gFine.H, gFine.L, gFine.C, gFine.V, gFine.n, 300);
+   return ok;
+  }
+
+//+------------------------------------------------------------------+
+//| Cycle de vie des zones                                           |
+//+------------------------------------------------------------------+
+void AddZone(CState &S, int type, double top, double bot, datetime t1, int t)
+  {
+   int n = ArraySize(S.z), cnt = 0, oldest = -1;
+   for(int i = 0; i < n; i++)
+     {
+      if(!S.z[i].alive || S.z[i].type != type) continue;
+      //--- élagage : la zone plus ancienne qui recoupe la nouvelle disparaît
+      if(S.z[i].top >= bot && S.z[i].bot <= top) { S.Kill(i); continue; }
+      if(type == ZT_ANCHOR)
+        {
+         if(!AnKeep) { S.Kill(i); continue; }
+         if(S.z[i].tEnd == 0) S.z[i].tEnd = t1;        // l'ancre précédente s'arrête à la nouvelle
+        }
+      cnt++;
+      if(oldest < 0) oldest = i;
+     }
+   if(cnt >= MAX_OBJ && oldest >= 0) S.Kill(oldest);    // limite de 500 par type, comme TradingView
+   SZone z;
+   z.type = type; z.top = top; z.bot = bot; z.t1 = t1; z.tEnd = 0;
+   z.up = false; z.dn = false; z.alive = true; z.born = t;
+   z.touch = gH[t] >= bot && gL[t] <= top;             // pas d'alerte d'entrée sur la bougie de création
+   Push(S.z, z);
+  }
+
+//--- Volume anormal : tick_volume > moyenne + RpSens écarts-types des RpLen bougies précédentes
+bool RepelSpike(int t)
+  {
+   if(t < RpLen) return false;
+   double sum = 0, sq = 0;
+   for(int i = t - RpLen; i < t; i++) { double v = (double)gV[i]; sum += v; sq += v * v; }
+   double mean = sum / RpLen;
+   double var = sq / RpLen - mean * mean;
+   if(var <= 0) return false;
+   return (double)gV[t] > mean + RpSens * MathSqrt(var);
+  }
+
+//+------------------------------------------------------------------+
+//| Une exécution du script sur la bougie clôturée t                 |
+//+------------------------------------------------------------------+
+void ProcessBar(CState &S, int t)
+  {
+   gCurBar = t;
+//--- nouveau jour : Repel Zones effacées si demandé
+   if(RpReset && t > 0 && DayKey(gT[t]) != DayKey(gT[t - 1]))
+      for(int i = 0; i < ArraySize(S.z); i++)
+         if(S.z[i].alive && S.z[i].type == ZT_REPEL) S.Kill(i);
+//--- zones existantes : entrée du prix, traversée des deux côtés sur clôtures confirmées
+   for(int i = 0; i < ArraySize(S.z); i++)
+     {
+      if(!S.z[i].alive || S.z[i].born >= t) continue;
+      int k = S.z[i].type;
+      bool touch = gH[t] >= S.z[i].bot && gL[t] <= S.z[i].top;
+      if(touch && !S.z[i].touch)
+         Ev(ZAlIn(k), "Prix dans la zone " + ZName(k) + " " + Px2(S.z[i].bot) + "-" + Px2(S.z[i].top));
+      S.z[i].touch = touch;
+      if(gC[t] > S.z[i].top) S.z[i].up = true;
+      if(gC[t] < S.z[i].bot) S.z[i].dn = true;
+      if(S.z[i].up && S.z[i].dn && ZClean(k))
+        {
+         S.Kill(i);
+         Ev(AlConsumed, "Zone " + ZName(k) + " " + Px2(S.z[i].bot) + "-" + Px2(S.z[i].top) + " traversée des deux côtés");
+        }
+     }
+//--- fenêtres d'ancre et séances terminées au plus tard à la clôture de cette bougie
+   datetime closeT = gT[t] + gPer;
+   int nEv = ArraySize(gEv);
+   while(S.evNext < nEv && gEv[S.evNext].tEv <= closeT)
+     {
+      int k = gEv[S.evNext].type;
+      double top = gEv[S.evNext].top, bot = gEv[S.evNext].bot;
+      if(k == ZT_ANCHOR)
+        {
+         S.fibTop = top; S.fibBot = bot; S.fibT1 = gEv[S.evNext].t1; S.fibDir = gEv[S.evNext].dir;
+         if(AnShow)
+           {
+            AddZone(S, k, top, bot, gEv[S.evNext].t1, t);
+            Ev(AlNewAnchor, "Nouvelle zone d'ancre " + Px2(bot) + "-" + Px2(top));
+           }
+        }
+      else
+        {
+         AddZone(S, k, top, bot, gEv[S.evNext].t1, t);
+         Ev(AlNewSess, "Nouvelle zone " + ZName(k) + " " + Px2(bot) + "-" + Px2(top));
+        }
+      S.evNext++;
+     }
+//--- Repel Zone : pic de participation sur la bougie clôturée
+   if(RpShow && RepelSpike(t))
+     {
+      double top = gH[t], bot = gL[t];
+      if(RpMode == Body && MathMax(gO[t], gC[t]) > MathMin(gO[t], gC[t]))
+        { top = MathMax(gO[t], gC[t]); bot = MathMin(gO[t], gC[t]); }
+      AddZone(S, ZT_REPEL, top, bot, gT[t], t);
+      Ev(AlNewRepel, "Nouvelle Repel Zone " + Px2(bot) + "-" + Px2(top));
+     }
+   S.Compact();
+  }
+
+//+------------------------------------------------------------------+
+int OnCalculate(const int rates_total, const int prev_calculated, const datetime &time[],
+                const double &open[], const double &high[], const double &low[], const double &close[],
+                const long &tick_volume[], const long &volume[], const int &spread[])
+  {
+   if(rates_total < 100)
+      return 0;
+   gPer = PeriodSeconds(PERIOD_CURRENT);
+   bool full = prev_calculated == 0 || gProcessed == -1 || rates_total < gTotal || rates_total - gTotal > 1;
+   bool newBar = false;
+   if(full)
+     {
+      gBase = MathMax(0, rates_total - InpMaxBars);
+      gN = rates_total - gBase;
+      ArrayResize(gO, gN); ArrayResize(gH, gN); ArrayResize(gL, gN); ArrayResize(gC, gN); ArrayResize(gT, gN); ArrayResize(gV, gN);
+      for(int i = 0; i < gN; i++)
+        { gO[i] = open[gBase + i]; gH[i] = high[gBase + i]; gL[i] = low[gBase + i]; gC[i] = close[gBase + i]; gT[i] = time[gBase + i]; gV[i] = tick_volume[gBase + i]; }
+      Atr(gATR, VisAtrLen, 0);
+      gTotal = rates_total;
+      SrvInit();
+      if(!LoadFine())
+        {
+         gProcessed = -2;              // données M5 en téléchargement : la minuterie recommence
+         if(gCvOk) { gCv.Erase(0); gCv.Update(true); }   // pas de dessin périmé en attendant
+         return rates_total;
+        }
+      gCommit.Reset();
+      gProcessed = 0;
+     }
+   else
+     {
+      int from = gN - 1;
+      gN = rates_total - gBase;
+      ArrayResize(gO, gN); ArrayResize(gH, gN); ArrayResize(gL, gN); ArrayResize(gC, gN); ArrayResize(gT, gN); ArrayResize(gV, gN);
+      for(int i = from; i < gN; i++)
+        { gO[i] = open[gBase + i]; gH[i] = high[gBase + i]; gL[i] = low[gBase + i]; gC[i] = close[gBase + i]; gT[i] = time[gBase + i]; gV[i] = tick_volume[gBase + i]; }
+      Atr(gATR, VisAtrLen, from);
+      gTotal = rates_total;
+      if(gProcessed == -2)
+         return rates_total;           // calcul complet en attente des données (OnTimer)
+      if(gN - 1 > gProcessed)
+         LoadFine();                   // nouvelle bougie : fenêtres terminées à jour
+     }
+//--- bougies clôturées : calculées une fois ; la bougie en cours ne crée ni ne supprime rien
+   while(gProcessed < gN - 1)
+     {
+      //--- alertes seulement pour les bougies qui clôturent en direct, pas pour l'historique
+      gAlertLive = !full && gProcessed >= gN - 3;
+      gAlertBuf = "";
+      ProcessBar(gCommit, gProcessed);
+      gAlertLive = false;
+      if(gAlertBuf != "")
+         SendAlert(gAlertBuf, gT[gProcessed]);
+      gProcessed++;
+      newBar = true;
+     }
+//--- le prix en cours change la visibilité de proximité : redessin limité à 4 par seconde
+   if(full || newBar || GetTickCount() - gLastRender >= 250)
+      Render(gCommit);
+   return rates_total;
+  }
+
+//--- barClose : heure du serveur de la clôture de la bougie
+bool InSession(datetime barClose)
+  {
+   if(!AlSessions) return true;
+   datetime utc = barClose - gSrvOff;
+   return (AlLondon && InHours(LocalMinutes(utc, true), AlLondonHours))
+       || (AlNewYork && InHours(LocalMinutes(utc, false), AlNYHours));
+  }
+
+void SendAlert(string msg, datetime bar)
+  {
+   if(!InSession(bar + gPer)) return;
+   string tf = gPer < 3600 ? "M" + IntegerToString(gPer / 60) : gPer < 86400 ? "H" + IntegerToString(gPer / 3600)
+               : gPer == 86400 ? "D1" : gPer == 604800 ? "W1" : "MN1";
+   string txt = "CX Gravity " + _Symbol + " " + tf + " " + TimeToString(bar, TIME_MINUTES) + " : " + msg;
+   if(AlPopup) Alert(txt);
+   if(AlPush)  SendNotification(StringSubstr(txt, 0, 255));
+  }
+
+void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
+  {
+   if(id != CHARTEVENT_CHART_CHANGE || gN <= 0 || gProcessed < 0)
+      return;
+   gDirty = true;
+   if(GetTickCount() - gLastRender >= 40)
+      Render(gCommit);             // sinon la minuterie redessine (défilement rapide)
+  }
+
+//--- Données M5 arrivées après le premier calcul (week-end, premier lancement) :
+//    calcul complet sans attendre un tick.
+void OnTimer()
+  {
+   if(gDirty && gProcessed >= 0)
+      Render(gCommit);
+   static uint lastTry = 0;
+   if(gProcessed != -2 || gN < 100 || GetTickCount() - lastTry < 1000)
+      return;
+   lastTry = GetTickCount();
+   SrvInit();
+   if(!LoadFine())
+      return;
+   gCommit.Reset();
+   for(gProcessed = 0; gProcessed < gN - 1; gProcessed++)
+      ProcessBar(gCommit, gProcessed);
+   Render(gCommit);
+  }
+
+//+------------------------------------------------------------------+
+//| Dessin                                                           |
+//+------------------------------------------------------------------+
+double gX0 = 0, gSp = 1, gY0 = 0, gKy = 0, gPMax = 0;
+int    gT0 = 0;
+
+int    Px(double v)  { return (int)MathRound(v * gDpi); }
+int    Wpx(int w)    { return MathMax(1, (int)MathFloor(w * gDpi)); }
+double XofBar(double b) { return gX0 + (b - gT0) * gSp; }
+double YofPrice(double p) { return gY0 + (gPMax - p) * gKy; }
+
+//--- heure -> abscisse : bougie qui contient l'heure, ou prolongement au-delà de la dernière
+double XofTime(double tm)
+  {
+   if(gN <= 0) return 0;
+   if(tm >= (double)gT[gN - 1]) return XofBar(gN - 1 + (tm - (double)gT[gN - 1]) / gPer);
+   if(tm < (double)gT[0]) return XofBar((tm - (double)gT[0]) / gPer);
+   int lo = 0, hi2 = gN - 1;
+   while(lo < hi2) { int m = (lo + hi2 + 1) / 2; if((double)gT[m] <= tm) lo = m; else hi2 = m - 1; }
+   return XofBar(lo);
+  }
+double Xof(double x, bool xt) { return xt ? XofTime(x) : XofBar(x); }
+
+//--- mélange « par-dessus » en entiers : les grandes zones se redessinent vite au défilement
+void BlendPx(int x, int y, uint c, double cov)
+  {
+   if(x < 0 || y < 0 || x >= gW || y >= gHh) return;
+   uint sa = (uint)(((c >> 24) & 0xFF) * (cov >= 1.0 ? 1.0 : cov));
+   if(sa == 0) return;
+   uint d = gCv.PixelGet(x, y);
+   uint da = (d >> 24) & 0xFF;
+   if(sa >= 255 || da == 0) { gCv.PixelSet(x, y, (sa << 24) | (c & 0xFFFFFF)); return; }
+   uint k  = da * (255 - sa) / 255;
+   uint oa = sa + k;
+   uint r = ((((c >> 16) & 0xFF) * sa) + (((d >> 16) & 0xFF) * k)) / oa;
+   uint g = ((((c >> 8) & 0xFF) * sa) + (((d >> 8) & 0xFF) * k)) / oa;
+   uint b = (((c & 0xFF) * sa) + ((d & 0xFF) * k)) / oa;
+   gCv.PixelSet(x, y, (oa << 24) | (r << 16) | (g << 8) | b);
+  }
+
+void FillRect(int x1, int y1, int x2, int y2, uint c)
+  {
+   int xa = MathMax(MathMin(x1, x2), 0), xb = MathMin(MathMax(x1, x2), gW - 1);
+   int ya = MathMax(MathMin(y1, y2), 0), yb = MathMin(MathMax(y1, y2), gHh - 1);
+   for(int y = ya; y <= yb; y++)
+      for(int x = xa; x <= xb; x++)
+         BlendPx(x, y, c, 1.0);
+  }
+
+void FillRoundRect(int x1, int y1, int x2, int y2, double rad, uint c)
+  {
+   for(int y = MathMax(y1, 0); y < MathMin(y2, gHh); y++)
+      for(int x = MathMax(x1, 0); x < MathMin(x2, gW); x++)
+        {
+         double px = x + 0.5, py = y + 0.5;
+         double qx = MathMax(MathMax(x1 + rad - px, px - (x2 - rad)), 0.0);
+         double qy = MathMax(MathMax(y1 + rad - py, py - (y2 - rad)), 0.0);
+         double cov = 1.0;
+         if(qx > 0.0 && qy > 0.0) cov = MathMax(0.0, MathMin(1.0, rad + 0.5 - MathSqrt(qx * qx + qy * qy)));
+         if(cov > 0.0) BlendPx(x, y, c, cov);
+        }
+  }
+
+//--- trait de 1 px (plein, tirets, points), horizontal, vertical ou oblique
+void DrawLine(double x1, double y1, double x2, double y2, int style, int w, uint c)
+  {
+   //--- découpe à la zone visible pour ne pas parcourir des milliers de pixels hors écran
+   double m = 2000;
+   if(MathMax(x1, x2) < -m || MathMin(x1, x2) > gW + m) return;
+   double len = MathSqrt((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1));
+   int on = 0, off = 0;
+   if(style == dsh) { on = Px(4); off = Px(4); }
+   if(style == dot) { on = MathMax(w, 1); off = MathMax(w, 1) * 2; }
+   if(len < 1.0) { BlendPx((int)MathRound(x1), (int)MathRound(y1), c, 1.0); return; }
+   double s0 = 0, s1 = len;
+   if(x2 != x1)
+     {
+      double ta = (0 - x1) / (x2 - x1) * len, tb = (gW - x1) / (x2 - x1) * len;
+      s0 = MathMax(0.0, MathMin(ta, tb) - 2); s1 = MathMin(len, MathMax(ta, tb) + 2);
+     }
+   int lx = -100000, ly = -100000;
+   for(double s = s0; s <= s1; s += 1.0)
+     {
+      if(style != sol && ((int)s % (on + off)) >= on) continue;
+      int x = (int)MathRound(x1 + (x2 - x1) * s / len), y = (int)MathRound(y1 + (y2 - y1) * s / len);
+      if(x == lx && y == ly) continue;
+      lx = x; ly = y;
+      for(int k = 0; k < w; k++)
+        {
+         if(MathAbs(x2 - x1) >= MathAbs(y2 - y1)) BlendPx(x, y - (w - 1) / 2 + k, c, 1.0);
+         else BlendPx(x - (w - 1) / 2 + k, y, c, 1.0);
+        }
+     }
+  }
+
+void FillPointer(double ax, int ay, int h, double halfW, int dir, uint c)
+  {
+   for(int j = 0; j < h; j++)
+     {
+      double half = halfW * (j + 0.5) / h;
+      int y = ay + dir * j - (dir < 0 ? 1 : 0);
+      for(int x = (int)MathFloor(ax - half - 1); x <= (int)MathCeil(ax + half + 1); x++)
+        {
+         double cov = MathMax(0.0, MathMin(1.0, half + 0.5 - MathAbs(x + 0.5 - ax)));
+         if(cov > 0.0) BlendPx(x, y, c, cov);
+        }
+     }
+  }
+void FillPointerH(int ax, double ay, int w, double halfH, uint c)
+  {
+   for(int j = 0; j < w; j++)
+     {
+      double half = halfH * (j + 0.5) / w;
+      int x = ax + j;
+      for(int y = (int)MathFloor(ay - half - 1); y <= (int)MathCeil(ay + half + 1); y++)
+        {
+         double cov = MathMax(0.0, MathMin(1.0, half + 0.5 - MathAbs(y + 0.5 - ay)));
+         if(cov > 0.0) BlendPx(x, y, c, cov);
+        }
+     }
+  }
+
+//--- tailles de texte de TradingView (mesurées sur les captures), en dixièmes de point
+void SetFont(int size, bool sym)
+  {
+   int s = size == tiny ? -45 : size == small ? -60 : -75;
+   gCv.FontSet(sym ? "Arial" : InpFont, s);
+  }
+
+void DrawLabel(const DLabel &lb)
+  {
+   double ax = Xof(lb.x, lb.xt);
+   if(ax < -300 || ax > gW + 300) return;
+   double ay = YofPrice(lb.y);
+   if(ay < -100 || ay > gHh + 100) return;
+   SetFont(lb.size, lb.sym);
+   int tw = 0, th = 0;
+   gCv.TextSize(lb.text, tw, th);
+   int padX = Px(3), padY = Px(1), ph = Px(3);
+   int w = tw + 2 * padX, h = th + 2 * padY;
+   int iy = (int)MathRound(ay), ix = (int)MathRound(ax);
+   bool bg = ((lb.bg >> 24) & 0xFF) > 0;
+   int x1, top;
+   if(lb.style == LS_LEFT)
+     {
+      x1 = ix + ph; top = iy - h / 2;
+      if(bg) { FillPointerH(ix, ay, ph + 1, ph, lb.bg); FillRoundRect(x1, top, x1 + w, top + h, 2.0 * gDpi, lb.bg); }
+     }
+   else
+     {
+      x1 = (int)MathRound(ax - w / 2.0);
+      top = lb.style == LS_UP ? iy + ph : iy - ph - h;
+      if(bg) { FillPointer(ax, iy, ph + 1, ph, lb.style == LS_UP ? 1 : -1, lb.bg); FillRoundRect(x1, top, x1 + w, top + h, 2.0 * gDpi, lb.bg); }
+     }
+   gCv.TextOut(x1 + w / 2, top + h / 2, lb.text, lb.tc, TA_CENTER | TA_VCENTER);
+  }
+
+//--- « 1.6180 » -> « 1.618 »
+string Trim0(double v)
+  {
+   string s = DoubleToString(v, 3);
+   while(StringLen(s) > 1 && StringSubstr(s, StringLen(s) - 1) == "0") s = StringSubstr(s, 0, StringLen(s) - 1);
+   if(StringSubstr(s, StringLen(s) - 1) == ".") s = StringSubstr(s, 0, StringLen(s) - 1);
+   return s;
+  }
+
+//--- une zone : remplissage, bordure, médiane, nom
+void DrawZone(const SZone &z, int W, int lw)
+  {
+   int k = z.type;
+   int x1 = (int)MathRound(XofTime((double)z.t1));
+   int x2 = z.tEnd == 0 ? W + 10 : (int)MathRound(XofTime((double)z.tEnd));
+   if(x2 <= x1) x2 = x1 + 1;
+   if(x2 < 0 || x1 > W) return;
+   int y1 = (int)MathRound(YofPrice(z.top));
+   int y2 = (int)MathRound(YofPrice(z.bot));
+   if(y2 < 0 || y1 > gHh) return;
+   if(y2 <= y1) y2 = y1 + 1;
+   color c = ZColor(k);
+   if(ZBorder(k))
+     {
+      uint bd = A(c, 40);
+      FillRect(x1 + lw, y1 + lw, x2 - lw, y2 - lw, A(c, ZFillT(k)));
+      FillRect(x1, y1, x2, y1 + lw - 1, bd);
+      FillRect(x1, y2 - lw + 1, x2, y2, bd);
+      FillRect(x1, y1 + lw, x1 + lw - 1, y2 - lw, bd);
+      if(z.tEnd != 0) FillRect(x2 - lw + 1, y1 + lw, x2, y2 - lw, bd);
+     }
+   else
+      FillRect(x1, y1, x2, y2, A(c, ZFillT(k)));
+   double ym = MathRound(YofPrice((z.top + z.bot) / 2.0));
+   if(ZMid(k))
+      DrawLine(x1, ym, x2, ym, ZMidSt(k), lw, A(c, 20));
+   if(ZText)
+     {
+      SetFont(tiny, false);
+      if(z.tEnd == 0)
+        {
+         int xt = (int)MathRound(XofBar(gN - 1)) + Px(12);
+         if(xt > W - Px(30)) xt = W - Px(30);
+         gCv.TextOut(MathMax(xt, x1 + Px(4)), (int)ym, ZName(k), A(c, 0), TA_LEFT | TA_VCENTER);
+        }
+      else
+         gCv.TextOut(x2 - Px(4), (int)ym, ZName(k), A(c, 0), TA_RIGHT | TA_VCENTER);
+     }
+  }
+
+void Render(CState &S)
+  {
+   int W = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
+   int H = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS, 0);
+   if(W <= 0 || H <= 0 || gN < 2) return;
+   if(!gCvOk)
+     {
+      if(!gCv.CreateBitmapLabel(0, 0, gName, 0, 0, W, H, COLOR_FORMAT_ARGB_NORMALIZE)) return;
+      gCvOk = true;
+      ObjectSetInteger(0, gName, OBJPROP_HIDDEN, true);
+      ObjectSetInteger(0, gName, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, gName, OBJPROP_BACK, false);
+     }
+   else if(gCv.Width() != W || gCv.Height() != H)
+      gCv.Resize(W, H);
+   gW = W; gHh = H;
+   gCv.Erase(0);
+
+   //--- correspondance bougie/prix -> pixels, depuis la première bougie visible
+   int firstShift = (int)ChartGetInteger(0, CHART_FIRST_VISIBLE_BAR);
+   int bars = Bars(_Symbol, PERIOD_CURRENT);
+   firstShift = MathMax(1, MathMin(firstShift, bars - 1));
+   double pMax = ChartGetDouble(0, CHART_PRICE_MAX, 0), pMin = ChartGetDouble(0, CHART_PRICE_MIN, 0);
+   int xa, ya, xb, yb;
+   if(pMax <= pMin || !ChartTimePriceToXY(0, 0, iTime(_Symbol, PERIOD_CURRENT, firstShift), pMax, xa, ya)
+      || !ChartTimePriceToXY(0, 0, iTime(_Symbol, PERIOD_CURRENT, firstShift - 1), pMin, xb, yb))
+     { gCv.Update(true); gLastRender = GetTickCount(); gDirty = false; return; }
+   gT0 = (gN - 1) - firstShift;                   // indice local de la première bougie visible
+   gX0 = xa;
+   gSp = xb - xa;
+   if(gSp <= 0) gSp = 1 << (int)ChartGetInteger(0, CHART_SCALE);
+   gPMax = pMax; gY0 = ya; gKy = (double)(yb - ya) / (pMax - pMin);
+   int lw = Wpx(1);
+
+   //--- proximité : zones à plus de VisAtrMul × ATR du prix cachées, mais toujours suivies
+   double px = gC[gN - 1];
+   double atr = gATR[gN - 1] != NA ? gATR[gN - 1] : (gN > 1 ? gATR[gN - 2] : NA);
+   double maxD = (VisNear && atr != NA) ? VisAtrMul * atr : -1;
+
+   //--- zones : Repel, séances, puis ancre par-dessus
+   int order[4] = { ZT_REPEL, ZT_ASIA, ZT_NY, ZT_ANCHOR };
+   for(int o = 0; o < 4; o++)
+      for(int i = 0; i < ArraySize(S.z); i++)
+        {
+         if(!S.z[i].alive || S.z[i].type != order[o]) continue;
+         if(maxD >= 0)
+           {
+            double d = px > S.z[i].top ? px - S.z[i].top : px < S.z[i].bot ? S.z[i].bot - px : 0;
+            if(d > maxD) continue;
+           }
+         DrawZone(S.z[i], W, lw);
+        }
+
+   //--- échelle de Fibonacci : extensions de la plage de l'ancre, dans son sens
+   if(FbShow && S.fibTop != NA && S.fibTop > S.fibBot)
+     {
+      double R = S.fibTop - S.fibBot;
+      double xs = MathRound(XofTime((double)S.fibT1));
+      double xe = MathRound(XofBar(gN - 1 + FbOffset));
+      uint fc = A(FbColor, FbTransp);
+      for(int i = 0; i < ArraySize(gFib); i++)
+        {
+         double p = S.fibDir >= 0 ? S.fibTop + gFib[i] * R : S.fibBot - gFib[i] * R;
+         double y = MathRound(YofPrice(p));
+         if(y < -50 || y > H + 50) continue;
+         DrawLine(xs, y, xe, y, (int)FbStyle, lw, fc);
+         if(FbLabels)
+           {
+            DLabel lb;
+            lb.x = gN - 1 + FbOffset; lb.y = p; lb.text = Trim0(gFib[i]) + "  " + Px2(p);
+            lb.bg = 0; lb.tc = A(FbColor, 0); lb.style = LS_LEFT; lb.size = (int)FbSize;
+            lb.xt = false; lb.sym = false; lb.alive = true;
+            DrawLabel(lb);
+           }
+        }
+     }
+   gCv.Update(true);
+   gLastRender = GetTickCount();
+   gDirty = false;
+  }
+//+------------------------------------------------------------------+

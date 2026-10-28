@@ -11,6 +11,10 @@ Indicateurs TradingView réécrits en MQL5, avec le même calcul et le même ren
 | `EA/CalculateurXAU.mq5` | Calculateur XAU 4.02 : outil position au style TradingView (base 4.01 du carnet) |
 | `Indicators/CX_Execution.mq5` | CX Écran 2 · Exécution : BoS/ChoCh, liquidité TFlab, EQH/EQL, IMFVG, LDZ, FVG Sessions, ICT HTF FVGs |
 | `Indicators/TV_Chart_Style.mq5` | Style du graphique clair TradingView (bougies, fond, sans grille ni volumes) |
+| `Indicators/CX_Gravity.mq5` | Recréation (code fermé) : ancre du jour COMEX, zones Repel et pics de volume Asie / New York |
+| `Indicators/CX_Flow.mq5` | Recréation (code fermé) : biais directionnel, sweep, OB/BB, MSS, signal et checklist |
+| `Indicators/CX_P2P.mq5` | Recréation (code fermé) : niveaux Asie / Londres / PDH / PDL / TDO, inversion de FVG, MSS, cibles Fibonacci |
+| `Indicators/CX_RangeBreaker.mq5` | Recréation (code fermé) : compression, cassures et retournements de mèche |
 
 ## Installation
 
