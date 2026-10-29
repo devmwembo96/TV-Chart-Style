@@ -48,6 +48,12 @@
 //| Sans l'EA Carnet XAU, l'envoi reste bloqué (ou désactiver        |
 //| « Risque et limites du carnet » : modèles ci-dessous).           |
 //+------------------------------------------------------------------+
+//| Sans restrictions (par défaut) : aucune règle ne bloque          |
+//| l'ouverture ; les règles du carnet et des paramètres s'affichent |
+//| en avertissement. Seuls bloquent le terminal, le compte, le      |
+//| broker (symbole, distances minimum, lot minimum) et un outil     |
+//| incohérent. Risque et lot saisis sont pris tels quels.           |
+//+------------------------------------------------------------------+
 //| Modèles sans le carnet :                                         |
 //|  - Fonds propres : capital de départ = budget de 12 pertes,      |
 //|    paliers 4 %, 2 % et 1 %, limites du jour et de la semaine,    |
@@ -63,7 +69,7 @@
 //| Les boutons et le calendrier économique ne fonctionnent pas      |
 //| dans le testeur de stratégie : tester l'outil sur compte démo.   |
 //+------------------------------------------------------------------+
-#property version     "4.02"
+#property version     "4.03"
 #property description "Carnet XAU : outil position et ticket d'ordre façon TradingView, risque et arrêts du carnet."
 
 #include <Trade\Trade.mqh>
@@ -138,6 +144,7 @@ enum ENUM_DRAG
 //=== Entrées ========================================================
 input group "=== Carnet XAU ==="
 input bool   InpUseCarnet        = true;  // Risque et limites du carnet (EA Carnet XAU sur ce compte)
+input bool   InpFree             = true;  // Sans restrictions : les règles avertissent, ne bloquent plus l'ouverture
 
 input group "=== Modèle de risque sans le carnet ==="
 input ENUM_ACC_MODE InpMode      = MODE_FONDS; // Type de compte
@@ -569,6 +576,15 @@ void Block(string &block, const string msg)
   {
    if(block == "")
       block = msg;
+  }
+
+// Règle du carnet ou des paramètres : blocage, ou simple avertissement sans restrictions
+void Rule(string &block, string &soft, const string msg)
+  {
+   if(InpFree)
+      Block(soft, msg);
+   else
+      Block(block, msg);
   }
 
 void Flash(const string text, const uint ms = 4000)
@@ -1164,7 +1180,7 @@ bool GetLimits(SLimits &l)
    l.stopMin   = InpStopMin;
    l.stopMax   = InpStopMax;
 
-   if(InpUseCarnet)
+   if(InpUseCarnet && (g_cx.on || !InpFree))
      {
       if(!g_cx.on)
         {
@@ -1352,7 +1368,7 @@ void ComputeCalc(SCalc &c)
       NewsCheck(TimeTradeServer(), newsName, newsTime, inNews);
 
    if(!linked)
-      Block(block, "Carnet XAU non relié : lance l'EA Carnet XAU sur ce compte");
+      Rule(block, soft, "Carnet XAU non relié : lance l'EA Carnet XAU sur ce compte");
    if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) || !MQLInfoInteger(MQL_TRADE_ALLOWED))
       Block(block, "Algo Trading désactivé");
    if(!AccountInfoInteger(ACCOUNT_TRADE_ALLOWED) || !AccountInfoInteger(ACCOUNT_TRADE_EXPERT))
@@ -1362,29 +1378,31 @@ void ComputeCalc(SCalc &c)
    if(linked)
      {
       if(lim.phase == 4 || lim.phase == 5)
-         Block(block, (lim.phase == 4) ? "Compte « échoué » dans le carnet : plus aucun trade"
+         Rule(block, soft, (lim.phase == 4) ? "Compte « échoué » dans le carnet : plus aucun trade"
                                        : "Compte « retiré » dans le carnet : plus aucun trade");
       if(g_lossesToday >= lim.maxLoss)
-         Block(block, StringFormat("%d pertes aujourd'hui : arrêt jusqu'à demain", g_lossesToday));
+         Rule(block, soft, StringFormat("%d pertes aujourd'hui : arrêt jusqu'à demain", g_lossesToday));
       if(g_tradesToday >= lim.maxTrades)
         {
          if(lim.carnet)
-            Block(block, StringFormat("%d trades aujourd'hui : limite du carnet atteinte", g_tradesToday));
+            Rule(block, soft, StringFormat("%d trades aujourd'hui : limite du carnet atteinte", g_tradesToday));
          else
             Block(soft, StringFormat("%d trades aujourd'hui (max %d)", g_tradesToday, lim.maxTrades));
         }
       if(lim.dayLimit > 0.0 && equity <= lim.dayFloor)
-         Block(block, "Perte maximum du jour atteinte (" + Usd(lim.dayLimit) + ") : arrêt jusqu'à demain");
+         Rule(block, soft, "Perte maximum du jour atteinte (" + Usd(lim.dayLimit) + ") : arrêt jusqu'à demain");
       if(lim.weekLoss > 0 && g_lossesWeek >= lim.weekLoss)
-         Block(block, StringFormat("%d pertes cette semaine : arrêt jusqu'à lundi", g_lossesWeek));
+         Rule(block, soft, StringFormat("%d pertes cette semaine : arrêt jusqu'à lundi", g_lossesWeek));
       if(lim.weekStop > 0.0 && weekPnl <= -lim.weekStop)
-         Block(block, "Perte maximum de la semaine atteinte : arrêt jusqu'à lundi");
+         Rule(block, soft, "Perte maximum de la semaine atteinte : arrêt jusqu'à lundi");
       if(equity <= lim.floorUsd)
-         Block(block, lim.own ? "Plancher de " + Usd(lim.floorUsd) + " atteint : retour en démo" : "Plancher de perte maximum atteint");
+         Rule(block, soft, lim.own ? "Plancher de " + Usd(lim.floorUsd) + " atteint : retour en démo" : "Plancher de perte maximum atteint");
       if(lim.goal > 0.0 && lim.gain >= lim.goal)
         {
          if(lim.days >= lim.minDays)
-            Block(block, StringFormat("Objectif de l'étape atteint et %d/%d jours : demande l'étape suivante", lim.days, lim.minDays));
+            Rule(block, soft, StringFormat("Objectif de l'étape atteint et %d/%d jours : demande l'étape suivante", lim.days, lim.minDays));
+         else if(InpFree)
+            Block(soft, "Objectif de l'étape atteint : micro-trades conseillés");
          else
             c.micro = true;      // jours minimum : micro-trades seulement
         }
@@ -1404,7 +1422,7 @@ void ComputeCalc(SCalc &c)
    double room = equity + g_openRiskToSL - lim.floorUsd;
    if(lim.dayLimit > 0.0)
       room = MathMin(room, equity + g_openRiskToSL - lim.dayFloor);
-   c.budget = MathMax(0.0, MathMin(lim.budget, 0.9 * room));
+   c.budget = InpFree ? MathMax(0.0, lim.budget) : MathMax(0.0, MathMin(lim.budget, 0.9 * room));
 
    //--- 3. Cotation
    MqlTick tick;
@@ -1443,16 +1461,16 @@ void ComputeCalc(SCalc &c)
       return;
      }
    if(g_tool.sig > 0 && TimeLocal() >= g_tool.sigExp)
-      Block(block, "Signal du Carnet expiré : retrace l'outil");
+      Rule(block, soft, "Signal du Carnet expiré : retrace l'outil");
 
    //--- Plage de stop (carnet) ; au Marché au-delà du maximum : ordre limite où le stop revient au maximum
    c.stopDist = MathAbs(c.entry - c.slEff);
    c.stopRaw  = c.stopDist;
    if(c.stopDist < lim.stopMin - 1e-9)
-      Block(block, StringFormat("Stop %.2f $ : sous le minimum de %.2f $", c.stopDist, lim.stopMin));
+      Rule(block, soft, StringFormat("Stop %.2f $ : sous le minimum de %.2f $", c.stopDist, lim.stopMin));
    else if(c.stopDist > lim.stopMax + 1e-9)
      {
-      if(c.kind == 0 && InpLimitOver)
+      if(c.kind == 0 && InpLimitOver && !InpFree)
         {
          c.limit    = true;
          c.entry    = (c.dir > 0) ? RoundToTick(c.slEff + lim.stopMax, -1) : RoundToTick(c.slEff - lim.stopMax, 1);
@@ -1464,7 +1482,7 @@ void ComputeCalc(SCalc &c)
            }
         }
       else
-         Block(block, StringFormat("Stop %.2f $ : au-delà du maximum de %.2f $", c.stopDist, lim.stopMax));
+         Rule(block, soft, StringFormat("Stop %.2f $ : au-delà du maximum de %.2f $", c.stopDist, lim.stopMax));
      }
 
    ENUM_ORDER_TYPE otype = (c.dir > 0) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
@@ -1498,10 +1516,15 @@ void ComputeCalc(SCalc &c)
    double vmin = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
    double want = c.budget;
    if(g_riskUser > 0.0)
-      want = MathMin(want, g_riskUser);
+      want = InpFree ? g_riskUser : MathMin(want, g_riskUser);
    c.lots = NormalizeLotsDown(want / c.lossPerLot);
    if(g_lotsUser > 0.0)
-      c.lots = MathMin(c.lots, NormalizeLotsDown(g_lotsUser));
+      c.lots = InpFree ? NormalizeLotsDown(g_lotsUser) : MathMin(c.lots, NormalizeLotsDown(g_lotsUser));
+   if(InpFree && c.lots < vmin && vmin > 0.0)
+     {
+      c.lots = NormalizeLotsDown(vmin);
+      Block(soft, "Lot porté au minimum de " + LotsStr(vmin));
+     }
    if(c.micro)
       c.lots = (vmin * c.lossPerLot <= c.budget) ? NormalizeLotsDown(vmin) : 0.0;
    c.risk = c.lots * c.lossPerLot;
@@ -1536,11 +1559,11 @@ void ComputeCalc(SCalc &c)
    if(!pending && ((c.dir > 0 && c.slEff >= c.bid) || (c.dir < 0 && c.slEff <= c.ask)))
       Block(block, "Stop trop proche du prix");
    if(c.tpR < InpMinR - 0.01)
-      Block(block, StringFormat("Objectif à %.1fR : minimum %.1fR", c.tpR, InpMinR));
+      Rule(block, soft, StringFormat("Objectif à %.1fR : minimum %.1fR", c.tpR, InpMinR));
    if(c.costPct > InpMaxCostPct)
-      Block(block, StringFormat("Coûts %.1f %% du stop (max %.1f %%)", c.costPct, InpMaxCostPct));
+      Rule(block, soft, StringFormat("Coûts %.1f %% du stop (max %.1f %%)", c.costPct, InpMaxCostPct));
    if(lim.spreadMax > 0.0 && c.spreadPct > lim.spreadMax)
-      Block(block, StringFormat("Spread %.0f %% du stop (max %.0f %% dans le carnet)", c.spreadPct, lim.spreadMax));
+      Rule(block, soft, StringFormat("Spread %.0f %% du stop (max %.0f %% dans le carnet)", c.spreadPct, lim.spreadMax));
    if(c.lots <= 0.0 || c.lots < vmin)
       Block(block, c.micro ? "Micro-trade impossible : marge du jour insuffisante" : "Lot calculé sous le minimum de " + LotsStr(vmin));
    if(stopsLvl > 0.0 && !pending &&
@@ -1550,16 +1573,16 @@ void ComputeCalc(SCalc &c)
    if(stopsLvl > 0.0 && pending && (MathAbs(market - c.entry) < stopsLvl || c.stopDist < stopsLvl || c.tpDist < stopsLvl))
       Block(block, "Ordre en attente trop proche du prix (minimum du broker)");
    if(c.marginPct > InpMaxMarginPct)
-      Block(block, StringFormat("Marge %.0f %% après trade (max %.0f %%)", c.marginPct, InpMaxMarginPct));
+      Rule(block, soft, StringFormat("Marge %.0f %% après trade (max %.0f %%)", c.marginPct, InpMaxMarginPct));
    if(linked && lim.dayLimit > 0.0 && worstEq < lim.dayFloor - 0.01)
-      Block(block, "SL touché = au-delà de la perte maximum du jour");
+      Rule(block, soft, "SL touché = au-delà de la perte maximum du jour");
    if(linked && lim.weekStop > 0.0 && weekPnl + g_openRiskToSL - c.risk < -lim.weekStop - 0.01)
-      Block(block, "SL touché = au-delà de la perte maximum de la semaine");
+      Rule(block, soft, "SL touché = au-delà de la perte maximum de la semaine");
    if(linked && worstEq <= lim.floorUsd)
-      Block(block, lim.own ? "SL touché = sous le plancher de " + Usd(lim.floorUsd) : "SL touché = plancher de perte maximum");
+      Rule(block, soft, lim.own ? "SL touché = sous le plancher de " + Usd(lim.floorUsd) : "SL touché = plancher de perte maximum");
 
    c.warn = soft;
-   if(InpSelfRules == RULE_BLOQUER && block == "")
+   if(InpSelfRules == RULE_BLOQUER && !InpFree && block == "")
       block = soft;
    c.reason  = block;
    c.allowed = (block == "");
@@ -3704,7 +3727,7 @@ void OnEditDone(const string name)
       g_lotsUser = 0.0;
       if(usd <= 0.0)
          g_riskUser = 0.0;
-      else if(usd > g_calc.budget + 0.005)
+      else if(usd > g_calc.budget + 0.005 && !InpFree)
         {
          g_riskUser = 0.0;
          Flash("Risque maximum " + Usd(g_calc.budget) + (InpUseCarnet ? " (carnet)" : " (palier)"), 5000);
@@ -3716,7 +3739,7 @@ void OnEditDone(const string name)
      {
       g_riskUser = 0.0;
       g_lotsUser = v;
-      if(v > 0.0 && g_calc.lossPerLot > 0.0 && NormalizeLotsDown(v) * g_calc.lossPerLot > g_calc.budget + 0.005)
+      if(!InpFree && v > 0.0 && g_calc.lossPerLot > 0.0 && NormalizeLotsDown(v) * g_calc.lossPerLot > g_calc.budget + 0.005)
          Flash("Lot limité au risque maximum de " + Usd(g_calc.budget), 5000);
      }
    else if(!g_tool.on || v <= 0.0)

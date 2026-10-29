@@ -8,7 +8,7 @@ Indicateurs TradingView réécrits en MQL5, avec le même calcul et le même ren
 |---|---|
 | `Indicators/LGD_CSD_Fib.mq5` | Liquidity Grab, CSD & Focused Fibonacci (LGD+CSD+Fib) |
 | `EA/CarnetXAU.mq5` | EA du Carnet XAU 2.16 : plan de Claude dessiné au style TradingView (base 2.14 du carnet) |
-| `EA/CalculateurXAU.mq5` | Calculateur XAU 4.02 : outil position au style TradingView (base 4.01 du carnet) |
+| `EA/CalculateurXAU.mq5` | Calculateur XAU 4.03 : outil position au style TradingView, mode sans restrictions (base 4.01 du carnet) |
 | `Indicators/CX_Execution.mq5` | CX Écran 2 · Exécution : BoS/ChoCh, liquidité TFlab, EQH/EQL, IMFVG, LDZ, FVG Sessions, ICT HTF FVGs |
 | `Indicators/TV_Chart_Style.mq5` | Style du graphique clair TradingView (bougies, fond, sans grille ni volumes) |
 | `Indicators/CX_Gravity.mq5` | Recréation (code fermé) : ancre du jour COMEX, zones Repel et pics de volume Asie / New York |
