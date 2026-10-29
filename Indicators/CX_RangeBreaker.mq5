@@ -10,9 +10,12 @@
 //| volume utilise le volume en ticks (tick_volume).                 |
 //| Dessin en CCanvas : transparence, police Trebuchet MS et limite  |
 //| de 500 objets par type comme TradingView.                        |
+//| Alertes multi-unités : le même calcul tourne en arrière-plan sur |
+//| chaque unité de la liste (M1 à D1 par défaut), à toute heure,    |
+//| quelle que soit l'unité du graphique.                            |
 //+------------------------------------------------------------------+
 #property copyright   "CX Range Breaker"
-#property version     "1.00"
+#property version     "1.01"
 #property description "CX Range Breaker : ranges de compression (ATR), boîte dynamique, cassures avec volume et retournements sur mèche."
 #property indicator_chart_window
 #property indicator_buffers 0
@@ -67,11 +70,9 @@ input ENUM_TSIZE LabelSize  = small;              // Taille des étiquettes
 input group "Alertes (à la clôture de la bougie)"
 input bool   AlPopup       = true;            // Fenêtre et son MT5
 input bool   AlPush        = true;            // Notification mobile (MetaQuotes ID)
-input bool   AlSessions    = true;            // Alertes seulement pendant les séances ci-dessous
-input bool   AlLondon      = true;            // Séance de Londres
-input string AlLondonHours = "08:00-11:00";   // Heures de Londres (heure de Londres)
-input bool   AlNewYork     = true;            // Séance de New York
-input string AlNYHours     = "08:30-11:30";   // Heures de New York (heure de New York)
+input bool   AlMultiTf     = true;            // Alertes sur toutes les unités de la liste (pas seulement celle du graphique)
+input string AlTfList      = "M1,M5,M15,M30,H1,H4,D1"; // Unités surveillées (séparées par des virgules)
+input int    AlTfBars      = 1500;            // Bougies calculées par unité surveillée
 input bool   AlRange       = true;            // Range détecté
 input bool   AlBreak       = true;            // Cassure du range (clôture hors de la boîte + tampon)
 input bool   AlBreakVol    = true;            // Cassure avec pic de volume
@@ -176,10 +177,33 @@ public:
    bool BOk(int id) { return id >= 0 && id < ArraySize(boxes) && boxes[id].alive; }
   };
 
-//--- Données du graphique (fenêtre de InpMaxBars bougies, indice 0 = la plus ancienne)
-double   gO[], gH[], gL[], gC[], gV[], gATR[];
-datetime gT[];
-int      gN = 0, gBase = 0, gTotal = 0, gProcessed = -1, gPer = 60;
+//--- Séries calculées : 0 = graphique (fenêtre de InpMaxBars bougies), puis les unités surveillées
+//    pour les alertes. Indice local 0 = la plus ancienne bougie.
+class CFeed
+  {
+public:
+   double          o[], h[], l[], c[], v[], atr[];
+   datetime        t[];
+   int             n;
+   ENUM_TIMEFRAMES tf;
+   int             per;
+   bool            ok;       // historique chargé et calculé
+   datetime        seen;     // ouverture de la bougie en cours au dernier contrôle
+   CState          st;       // état « commit » (unités surveillées)
+   CFeed() { n = 0; tf = PERIOD_CURRENT; per = 60; ok = false; seen = 0; }
+  };
+CFeed    gF[];
+int      gK = 0;                       // série en cours de calcul
+#define  gO   gF[gK].o
+#define  gH   gF[gK].h
+#define  gL   gF[gK].l
+#define  gC   gF[gK].c
+#define  gV   gF[gK].v
+#define  gATR gF[gK].atr
+#define  gT   gF[gK].t
+#define  gN   gF[gK].n
+int      gBase = 0, gTotal = 0, gProcessed = -1, gPer = 60;
+uint     gLastFeeds = 0;
 CState   gCommit, gWork;
 double   gDpi = 1.0;
 
@@ -212,6 +236,7 @@ int OnInit()
       || InpVolMult <= 0 || InpVolLen < 1 || InpMaxBars < 300)
       return INIT_PARAMETERS_INCORRECT;
    ApplyPreset();
+   InitFeeds();
    gDpi = MathMax(1.0, TerminalInfoInteger(TERMINAL_SCREEN_DPI) / 96.0);
    gName = "CXRB_" + IntegerToString(ChartID()) + "_" + IntegerToString(GetTickCount());
    IndicatorSetString(INDICATOR_SHORTNAME, "CX Range Breaker");
@@ -395,6 +420,7 @@ int OnCalculate(const int rates_total, const int prev_calculated, const datetime
   {
    if(rates_total < 100)
       return 0;
+   gK = 0;
    gPer = PeriodSeconds(PERIOD_CURRENT);
    bool full = prev_calculated == 0 || gProcessed == -1 || rates_total < gTotal || rates_total - gTotal > 1;
    int from = 0;
@@ -430,7 +456,7 @@ int OnCalculate(const int rates_total, const int prev_calculated, const datetime
       ProcessBar(gCommit, gProcessed, true);
       gAlertLive = false;
       if(gAlertBuf != "")
-         SendAlert(gAlertBuf, gT[gProcessed]);
+         SendAlert(gAlertBuf, gT[gProcessed], gPer);
       gProcessed++;
       newBar = true;
      }
@@ -447,57 +473,15 @@ int OnCalculate(const int rates_total, const int prev_calculated, const datetime
    return rates_total;
   }
 
-//--- Séances de Londres et de New York, heure locale, changement d'heure compris
-datetime NthSunday(int year, int mon, int nth)      // nth = 0 : dernier dimanche du mois
+string TfName(int per)
   {
-   MqlDateTime d; d.year = year; d.mon = mon; d.day = 1; d.hour = 0; d.min = 0; d.sec = 0;
-   datetime first = StructToTime(d);
-   MqlDateTime f; TimeToStruct(first, f);
-   int sun = (7 - f.day_of_week) % 7;                 // premier dimanche
-   if(nth > 0) return first + (sun + 7 * (nth - 1)) * 86400;
-   datetime t = first + sun * 86400;
-   MqlDateTime n;
-   while(true) { TimeToStruct(t + 7 * 86400, n); if(n.mon != mon) break; t += 7 * 86400; }
-   return t;
-  }
-//--- heure de Londres et de New York (minutes depuis minuit) d'une heure UTC
-int LocalMinutes(datetime utc, bool london)
-  {
-   MqlDateTime u; TimeToStruct(utc, u);
-   int off;
-   if(london)
-      off = (utc >= NthSunday(u.year, 3, 0) + 3600 && utc < NthSunday(u.year, 10, 0) + 3600) ? 60 : 0;
-   else
-      off = (utc >= NthSunday(u.year, 3, 2) + 7 * 3600 && utc < NthSunday(u.year, 11, 1) + 6 * 3600) ? -240 : -300;
-   int m = u.hour * 60 + u.min + off;
-   return (m + 1440) % 1440;
-  }
-bool InHours(int m, string hours)                    // « 08:00-11:00 »
-  {
-   string p[];
-   if(StringSplit(hours, '-', p) != 2) return true;
-   string a[], b[];
-   if(StringSplit(p[0], ':', a) != 2 || StringSplit(p[1], ':', b) != 2) return true;
-   int s = (int)StringToInteger(a[0]) * 60 + (int)StringToInteger(a[1]);
-   int e = (int)StringToInteger(b[0]) * 60 + (int)StringToInteger(b[1]);
-   return s <= e ? (m >= s && m < e) : (m >= s || m < e);
-  }
-//--- barClose : heure du serveur de la clôture de la bougie
-bool InSession(datetime barClose)
-  {
-   if(!AlSessions) return true;
-   int offset = (int)MathRound((double)(TimeCurrent() - TimeGMT()) / 1800.0) * 1800;   // décalage du serveur
-   datetime utc = barClose - offset;
-   return (AlLondon && InHours(LocalMinutes(utc, true), AlLondonHours))
-       || (AlNewYork && InHours(LocalMinutes(utc, false), AlNYHours));
+   return per < 3600 ? "M" + IntegerToString(per / 60) : per < 86400 ? "H" + IntegerToString(per / 3600)
+          : per == 86400 ? "D1" : per == 604800 ? "W1" : "MN1";
   }
 
-void SendAlert(string msg, datetime bar)
+void SendAlert(string msg, datetime bar, int per)
   {
-   if(!InSession(bar + gPer)) return;
-   string tf = gPer < 3600 ? "M" + IntegerToString(gPer / 60) : gPer < 86400 ? "H" + IntegerToString(gPer / 3600)
-               : gPer == 86400 ? "D1" : gPer == 604800 ? "W1" : "MN1";
-   string txt = "CX Range Breaker " + _Symbol + " " + tf + " " + TimeToString(bar, TIME_MINUTES) + " : " + msg;
+   string txt = "CX Range Breaker " + _Symbol + " " + TfName(per) + " " + TimeToString(bar, TIME_MINUTES) + " : " + msg;
    if(AlPopup) Alert(txt);
    if(AlPush)  SendNotification(StringSubstr(txt, 0, 255));
   }
@@ -513,8 +497,132 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
 
 void OnTimer()
   {
+   if(AlMultiTf && GetTickCount() - gLastFeeds >= 1000)
+     {
+      gLastFeeds = GetTickCount();
+      for(int k = 1; k < ArraySize(gF); k++)
+         UpdateFeed(k);
+      gK = 0;
+     }
    if(gDirty && gProcessed >= 0)
       Render(gWork);
+  }
+
+//+------------------------------------------------------------------+
+//| Unités surveillées pour les alertes (calcul sans dessin)         |
+//+------------------------------------------------------------------+
+ENUM_TIMEFRAMES TfFromName(string name)
+  {
+   string n = name;
+   StringTrimLeft(n); StringTrimRight(n); StringToUpper(n);
+   if(n == "M1")  return PERIOD_M1;
+   if(n == "M2")  return PERIOD_M2;
+   if(n == "M3")  return PERIOD_M3;
+   if(n == "M5")  return PERIOD_M5;
+   if(n == "M10") return PERIOD_M10;
+   if(n == "M15") return PERIOD_M15;
+   if(n == "M30") return PERIOD_M30;
+   if(n == "H1")  return PERIOD_H1;
+   if(n == "H2")  return PERIOD_H2;
+   if(n == "H4")  return PERIOD_H4;
+   if(n == "H8")  return PERIOD_H8;
+   if(n == "D1")  return PERIOD_D1;
+   if(n == "W1")  return PERIOD_W1;
+   if(n == "MN1") return PERIOD_MN1;
+   return PERIOD_CURRENT;
+  }
+
+//--- série 0 = graphique ; les unités de la liste autres que celle du graphique s'ajoutent derrière
+void InitFeeds()
+  {
+   ArrayResize(gF, 1);
+   gK = 0;
+   if(!AlMultiTf) return;
+   int cur = PeriodSeconds(PERIOD_CURRENT);
+   string parts[];
+   int np = StringSplit(AlTfList, ',', parts);
+   for(int i = 0; i < np; i++)
+     {
+      ENUM_TIMEFRAMES tf = TfFromName(parts[i]);
+      if(tf == PERIOD_CURRENT) continue;
+      int per = PeriodSeconds(tf);
+      if(per == cur) continue;                        // l'unité du graphique a déjà ses alertes
+      bool dup = false;
+      for(int k = 1; k < ArraySize(gF); k++) if(gF[k].per == per) dup = true;
+      if(dup) continue;
+      int m = ArraySize(gF);
+      ArrayResize(gF, m + 1);
+      gF[m].tf = tf; gF[m].per = per; gF[m].ok = false; gF[m].seen = 0; gF[m].n = 0;
+     }
+  }
+
+void SetBar(int i, const MqlRates &r)
+  {
+   gO[i] = r.open; gH[i] = r.high; gL[i] = r.low; gC[i] = r.close; gV[i] = (double)r.tick_volume; gT[i] = r.time;
+  }
+
+void ResizeFeed(int n)
+  {
+   ArrayResize(gO, n, 256); ArrayResize(gH, n, 256); ArrayResize(gL, n, 256); ArrayResize(gC, n, 256);
+   ArrayResize(gV, n, 256); ArrayResize(gT, n, 256);
+   gN = n;
+  }
+
+//--- historique complet des bougies clôturées, calculé sans alerte
+bool LoadFeed(int k)
+  {
+   MqlRates r[];
+   int got = CopyRates(_Symbol, gF[k].tf, 1, MathMax(300, AlTfBars), r);
+   if(got < gAtrLen + gLen + 10) return false;
+   gK = k;
+   ResizeFeed(got);
+   for(int i = 0; i < got; i++) SetBar(i, r[i]);
+   Atr(gATR, gAtrLen, 0);
+   gF[k].st.Reset();
+   for(int t = 0; t < got; t++) ProcessBar(gF[k].st, t, true);
+   gK = 0;
+   return true;
+  }
+
+//--- nouvelle bougie sur l'unité k : calcule les bougies clôturées depuis le dernier contrôle
+void UpdateFeed(int k)
+  {
+   ENUM_TIMEFRAMES tf = gF[k].tf;
+   datetime cur = iTime(_Symbol, tf, 0);
+   if(cur == 0 || cur == gF[k].seen) return;
+   if(!gF[k].ok)
+     {
+      if(LoadFeed(k)) { gF[k].ok = true; gF[k].seen = cur; }
+      return;
+     }
+   MqlRates r[];
+   int got = CopyRates(_Symbol, tf, 1, 10, r);
+   if(got <= 0) return;
+   datetime last = gF[k].t[gF[k].n - 1];
+   int first = -1;
+   for(int i = 0; i < got; i++) if(r[i].time > last) { first = i; break; }
+   gF[k].seen = cur;
+   if(first < 0) return;
+   if(first == 0 && got == 10)                       // trou dans l'historique : recalcul complet, sans alerte
+     {
+      gF[k].ok = LoadFeed(k);
+      return;
+     }
+   gK = k;
+   int from = gN;
+   ResizeFeed(from + got - first);
+   for(int i = first; i < got; i++) SetBar(from + i - first, r[i]);
+   Atr(gATR, gAtrLen, from);
+   for(int t = from; t < gN; t++)
+     {
+      gAlertLive = t >= gN - 2;                      // seulement les bougies qui viennent de clôturer
+      gAlertBuf = "";
+      ProcessBar(gF[k].st, t, true);
+      gAlertLive = false;
+      if(gAlertBuf != "")
+         SendAlert(gAlertBuf, gT[t], gF[k].per);
+     }
+   gK = 0;
   }
 
 //+------------------------------------------------------------------+
@@ -653,6 +761,7 @@ void DrawLabel(const DLabel &lb)
 
 void Render(CState &S)
   {
+   gK = 0;
    int W = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
    int H = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS, 0);
    if(W <= 0 || H <= 0 || gN < 2) return;
