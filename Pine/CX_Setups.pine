@@ -1,0 +1,3175 @@
+//@version=6
+indicator("CX Setups", shorttitle = "CX Setups", overlay = true, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500, max_bars_back = 5000)
+
+// =====================================================================================
+//  CX Setups · stratégie intraday XAUUSD (M1 – M15), tout en un.
+//
+//  Crédits et licences des parties reprises :
+//   · « ICT Sessions Liquidity & Bias » (ISLB) v3.8 : séances, bougies de liquidité,
+//     points de liquidité, biais, POI et moteur Direct / Confirmation, statut de séance.
+//     Mozilla Public License 2.0 (https://mozilla.org/MPL/2.0/).
+//   · « ICT HTF FVGs » © fadizeidan : FVG des unités supérieures.
+//     Mozilla Public License 2.0 (https://mozilla.org/MPL/2.0/).
+//   · « Session Sweeps » © LuxAlgo : zones de sweep buyside / sellside.
+//     Creative Commons BY-NC-SA 4.0 (https://creativecommons.org/licenses/by-nc-sa/4.0/) :
+//     usage personnel, non commercial ; ce fichier dérivé reste sous la même licence.
+//   · S4 PO3 : réalisation originale d'après une description publique (aucun code
+//     d'origine) ; idée « PO3 Model » de CantoLab.
+//   · Premium / Discount, setups S1 – S4, tableaux et suivi des trades : ajouts originaux.
+//
+//  Contenu :
+//   1. Séances ISLB (heure de New York l'été, IST l'hiver comme ISLB) + NY PM optionnel.
+//   2. Points de liquidité ISLB + PMH / PML, NY PM, PD 50 %, niveaux balayés du jour,
+//      zones de sweep LuxAlgo sur chaque niveau balayé.
+//   3. Premium / Discount du dernier range de swing (pivots M15 par défaut), OTE.
+//   4. Biais ISLB (Daily, 4H, 1H, TRADE) + tableau NOW / NEXT.
+//   5. POI ISLB (OB, RB, BB, CRB, IFVG) et FVG HTF (fadi).
+//   6. Setups, signaux à la clôture : S1 rejet FVG HTF · S2 sweep de liquidité + CISD
+//      S3 A+ liquidité balayée dans un POI / FVG HTF · S4 PO3 (C2 + CISD).
+//      Flèche, entrée, SL, TP (liquidité ou R fixe), résolution ✓ TP / ✕ SL.
+//   7. Un tableau par setup (checklist) et le tableau BIAS.
+//   8. Alertes : une alerte « Any alert() function call » couvre tout (un message par
+//      bougie, à la clôture) ; alertcondition par setup en plus.
+// =====================================================================================
+
+// ─────────────────────────── Affichage ───────────────────────────
+G0 = "Affichage"
+preset    = input.string("Épuré", "Préréglage d'affichage", options = ["Épuré", "Complet", "Personnalisé"], group = G0, tooltip = "Épuré : niveaux, FVG HTF, POI, signaux et tableaux ; sans zones de sweep, teinte premium / discount, OTE, projections PO3, bougies HTF ni niveaux balayés.\nComplet : tout.\nPersonnalisé : les interrupteurs de chaque groupe.")
+startDate = input.time(timestamp("01 Jan 2026 00:00 +0000"), "Afficher à partir du", group = G0, tooltip = "Rien n'est dessiné avant cette date.")
+maxTF     = input.int(60, "Unité maximale pour les séances, POI et setups (minutes)", minval = 1, maxval = 1440, group = G0, tooltip = "Au-dessus, seuls les niveaux et le biais sont affichés (comme ISLB).")
+
+G1 = "Séances"
+season    = input.string("Auto", "Saison", options = ["Auto", "Summer", "Winter", "Manual (NY)"], group = G1, tooltip = "Auto : hiver tant que Londres est à l'heure GMT (dernier dimanche d'octobre au dernier dimanche de mars), sinon été.\nÉté (heure NY) : Asie 17:00 – 00:15, Frankfurt 01:00, killzone 02:00, Londres 03:00 – 05:00, bougie NY 07:00, New York 08:00 – 12:00.\nHiver (heure NY) : Asie 18:00 – 01:00, Frankfurt 01:00, killzone 02:00, Londres 03:00 – 06:00, bougie NY 06:00, New York 07:00 – 10:00.\nManual (NY) : les heures du groupe suivant, en heure de New York.")
+nyPmOn    = input.bool(false, "Séance NY PM (13:00 – 16:00 NY)", group = G1)
+nyPmTrd   = input.bool(true, "NY PM compte comme temps de trading", group = G1)
+
+GM = "Heures manuelles (New York) · Saison = Manual (NY)"
+manAs  = input.session("1800-0100", "Asie (or)", group = GM)
+manFft = input.session("0100-0200", "Bougie de liquidité Frankfurt", group = GM)
+manKz  = input.session("0200-0300", "Killzone de Londres", group = GM)
+manLdS = input.session("0300-0600", "Séance de Londres", group = GM)
+manLdT = input.session("0200-0600", "Temps de trading Londres", group = GM)
+manNyL = input.session("0600-0700", "Bougie de liquidité NY", group = GM)
+manNyT = input.session("0700-1000", "Temps de trading New York", group = GM)
+manNyP = input.session("1300-1600", "NY PM", group = GM)
+
+G2 = "Range d'Asie"
+showBox = input.bool(true, "Afficher le range d'Asie", group = G2)
+boxCol  = input.color(color.new(#B2B5BE, 75), "Couleur (transparence dans le sélecteur)", group = G2)
+
+G3 = "Bougies de liquidité ($$$)"
+showLiq = input.bool(true, "Marquer $$$ sur le haut et le bas des bougies de liquidité", group = G3)
+liqCol  = input.color(#787B86, "Couleur des $$$", group = G3)
+liqLine = input.bool(false, "Ligne à travers les $$$", group = G3)
+hideSw  = input.bool(true, "Masquer le $$$ une fois balayé", group = G3)
+liqGap  = input.float(0.15, "Écart bougie – $$$ (× ATR 14)", minval = 0, step = 0.05, group = G3)
+txtSz   = input.string(size.tiny, "Taille du texte", options = [size.tiny, size.small, size.normal], group = G3)
+
+G4 = "Biais"
+showBias = input.bool(true, "Tableau BIAS", group = G4)
+biasPos  = input.string("Top right", "Position", options = ["Top right", "Top left", "Bottom right", "Bottom left", "Middle right", "Middle left"], group = G4)
+lineSw   = input.bool(true, "Swings lus sur les clôtures (graphique en ligne)", group = G4, tooltip = "Oui : swings des clôtures. Non : swings des corps.")
+swLen    = input.int(1, "Taille de swing 1H (bougies de chaque côté)", minval = 1, maxval = 10, group = G4)
+showSt   = input.bool(true, "Statut de séance (NOW / NEXT)", group = G4)
+boxSz    = input.string(size.small, "Taille du texte du tableau", options = [size.tiny, size.small, size.normal], group = G4)
+
+// couleurs du ticket (tableaux) et de TradingView
+color TK_BG   = #131722
+color TK_BD   = #363A45
+color TK_LB   = #868B98
+color TK_TX   = color.white
+color TV_GRN  = #089981
+color TV_RED  = #F23645
+color TV_ORG  = #FF9800
+color TV_GRY  = #787B86
+color biasCol = TK_LB
+color buyCol  = TV_GRN
+color sellCol = TV_RED
+
+G6 = "Points de liquidité (utiliser = compter · afficher = dessiner)"
+uAsia  = input.bool(true, "Asie H / L", group = G6, inline = "a")
+shAsia = input.bool(true, "afficher", group = G6, inline = "a")
+uFft   = input.bool(true, "Frankfurt H / L", group = G6, inline = "f")
+shFft  = input.bool(true, "afficher", group = G6, inline = "f")
+uNyc   = input.bool(true, "Bougie NY H / L", group = G6, inline = "n")
+shNyc  = input.bool(true, "afficher", group = G6, inline = "n")
+uKz    = input.bool(true, "Killzone H / L", group = G6, inline = "k")
+shKz   = input.bool(true, "afficher", group = G6, inline = "k")
+uLdn   = input.bool(true, "Londres H / L", group = G6, inline = "l")
+shLdn  = input.bool(true, "afficher", group = G6, inline = "l")
+uPd    = input.bool(true, "PDH / PDL", group = G6, inline = "d")
+shPd   = input.bool(true, "afficher", group = G6, inline = "d")
+uPw    = input.bool(true, "PWH / PWL", group = G6, inline = "w")
+shPw   = input.bool(true, "afficher", group = G6, inline = "w")
+uPm    = input.bool(true, "PMH / PML (mois précédent)", group = G6, inline = "m")
+shPm   = input.bool(true, "afficher", group = G6, inline = "m")
+uNp    = input.bool(true, "NY PM H / L (si la séance est active)", group = G6, inline = "p")
+shNp   = input.bool(true, "afficher", group = G6, inline = "p")
+uEq    = input.bool(true, "EQH / EQL (15m)", group = G6, inline = "e")
+shEq   = input.bool(true, "afficher", group = G6, inline = "e")
+eqTol  = input.float(0.1, "Égaux = à moins de (× ATR 15m)", minval = 0.01, step = 0.01, group = G6)
+shP50  = input.bool(false, "Milieu de la veille (PD 50 %), affiché seulement", group = G6)
+lvCol  = input.color(color.new(#787B86, 40), "Ligne des niveaux", group = G6, inline = "ls")
+lvSty  = input.string("Pointillés", "", options = ["Plein", "Tirets", "Pointillés"], group = G6, inline = "ls")
+lvW    = input.int(1, "épaisseur", minval = 1, maxval = 4, group = G6, inline = "ls")
+lvTxt  = input.color(color.new(#787B86, 20), "Texte des niveaux", group = G6, inline = "lt")
+lvSz   = input.string(size.tiny, "", options = [size.tiny, size.small, size.normal], group = G6, inline = "lt")
+shTkI  = input.bool(false, "Afficher les niveaux balayés aujourd'hui (très clair, ✕ au balayage)", group = G6)
+tkCol  = input.color(color.new(#787B86, 80), "Couleur des niveaux balayés", group = G6)
+
+GSW = "Zones de sweep (LuxAlgo Session Sweeps) sur les niveaux balayés"
+swpOnI = input.bool(true, "Zones de sweep (préréglage Personnalisé)", group = GSW)
+swpBC  = input.color(color.new(#FF9800, 37), "Buyside", group = GSW, inline = "b")
+swpSC  = input.color(color.new(#2196F3, 37), "Sellside", group = GSW, inline = "b")
+swpM   = input.float(1.3, "Marge (× ATR 21)", minval = 0.5, maxval = 10, step = 0.1, group = GSW)
+swpML  = input.int(5, "Longueur de la marge (bougies)", minval = 2, maxval = 10, group = GSW)
+swpHF  = input.bool(false, "Masquer les faux sweeps", group = GSW, inline = "f")
+swpFC  = input.color(color.new(#787B86, 73), "", group = GSW, inline = "f")
+
+G7 = "POI et type d'entrée (ISLB)"
+showPoi  = input.bool(true, "Afficher les POI du setup en cours", group = G7, tooltip = "OB et FVG des unités 1H, 4H et Daily, du côté du biais TRADE seulement. Le plus proche par unité.")
+p1H      = input.bool(true, "1H", group = G7, inline = "tf")
+p4H      = input.bool(true, "4H", group = G7, inline = "tf")
+pDy      = input.bool(true, "Daily", group = G7, inline = "tf")
+poiOB    = input.bool(true, "OB", group = G7, inline = "ty")
+poiRB    = input.bool(true, "RB", group = G7, inline = "ty")
+poiBB    = input.bool(true, "BB", group = G7, inline = "ty")
+poiCRB   = input.bool(true, "RB de continuation (4H+)", group = G7, inline = "t2")
+poiIFVG  = input.bool(true, "IFVG (4H+)", group = G7, inline = "t2")
+obTop    = input.bool(false, "L'OB doit être au sommet / au creux", group = G7)
+obLook   = input.int(10, "Sommet / creux des dernières (bougies)", minval = 3, maxval = 50, group = G7)
+obBig    = input.float(1.5, "Bougie OB pas plus grande que (× corps moyen 20)", minval = 0, step = 0.1, group = G7, tooltip = "0 = sans limite.")
+obTol    = input.float(2, "Tolérance sommet / creux (pips)", minval = 0, step = 0.5, group = G7)
+minStk   = input.int(2, "Niveaux empilés pour Direct", minval = 2, maxval = 5, group = G7)
+clMult   = input.float(0.3, "Empilés = niveaux à moins de (× ATR 1H)", minval = 0.05, step = 0.05, group = G7)
+sprIn    = input.float(0, "Tolérance de spread (prix, 0 = auto)", minval = 0, step = 0.01, group = G7, tooltip = "0 = auto : 0.30 sur l'or, 1 pip sur le forex.")
+maxAgeD  = input.int(4, "POI des derniers", minval = 1, maxval = 60, group = G7, inline = "age")
+ageMode  = input.string("Trading days", "", options = ["Trading days", "Calendar days"], group = G7, inline = "age")
+reachMult = input.float(1.0, "POI à moins de (× ATR Daily) du prix", minval = 0.1, step = 0.1, group = G7)
+poiTxtCol = input.color(#131722, "Étiquette", group = G7, inline = "lb")
+poiTxtSz  = input.int(8, "taille", minval = 6, maxval = 20, group = G7, inline = "lb")
+poiLnCol  = input.color(#131722, "Ligne du POI", group = G7, inline = "pl")
+poiLnW    = input.int(1, "épaisseur", minval = 1, maxval = 4, group = G7, inline = "pl")
+showEt    = input.bool(true, "Type d'entrée sur l'étiquette (Direct / Confirmation)", group = G7)
+reqLiq    = input.bool(false, "Seulement les POI avec de la liquidité devant", group = G7)
+mitCol    = input.color(#C9CCD3, "POI touché aujourd'hui", group = G7, inline = "mc")
+mitSz     = input.int(6, "taille", minval = 4, maxval = 20, group = G7, inline = "mc")
+hideMit   = input.bool(false, "Masquer les POI touchés", group = G7)
+poiNames  = input.bool(false, "Noms des liquidités sous l'étiquette", group = G7)
+
+GPD = "Premium / Discount"
+pdShowI  = input.bool(true, "Teinte premium / discount (préréglage Personnalisé)", group = GPD)
+pdTfIn   = input.timeframe("15", "Unité des pivots (vide = graphique)", group = GPD)
+pdLen    = input.int(5, "Longueur des pivots", minval = 1, maxval = 20, group = GPD)
+pdPrem   = input.color(color.new(#F23645, 92), "Premium", group = GPD, inline = "pc")
+pdDisc   = input.color(color.new(#089981, 92), "Discount", group = GPD, inline = "pc")
+pdEqCol  = input.color(color.new(#787B86, 30), "Équilibre", group = GPD, inline = "eq")
+pdEqSty  = input.string("Tirets", "", options = ["Plein", "Tirets", "Pointillés"], group = GPD, inline = "eq")
+pdTxtCol = input.color(color.new(#787B86, 20), "Texte", group = GPD, inline = "pt")
+pdTxtSz  = input.string(size.tiny, "", options = [size.tiny, size.small, size.normal], group = GPD, inline = "pt")
+pdEqBand = input.float(5, "Équilibre = 50 % ± (%)", minval = 0, maxval = 20, step = 1, group = GPD)
+oteI     = input.bool(false, "OTE 62 – 79 % (préréglage Personnalisé)", group = GPD)
+oteCol   = input.color(color.new(#787B86, 85), "Couleur OTE", group = GPD)
+
+G9 = "FVG HTF (fadi)"
+f1On  = input.bool(false, "15m", group = G9, inline = "f1")
+f1Max = input.int(3, "max", minval = 0, maxval = 20, group = G9, inline = "f1")
+f2On  = input.bool(true, "1H", group = G9, inline = "f2")
+f2Max = input.int(3, "max", minval = 0, maxval = 20, group = G9, inline = "f2")
+f3On  = input.bool(true, "4H", group = G9, inline = "f3")
+f3Max = input.int(3, "max", minval = 0, maxval = 20, group = G9, inline = "f3")
+f4On  = input.bool(true, "Daily", group = G9, inline = "f4")
+f4Max = input.int(3, "max", minval = 0, maxval = 20, group = G9, inline = "f4")
+f5On  = input.bool(false, "Weekly", group = G9, inline = "f5")
+f5Max = input.int(2, "max", minval = 0, maxval = 20, group = G9, inline = "f5", tooltip = "Coché = calculé et utilisé par les setups. max = nombre dessiné par unité.")
+fvgDraw       = input.bool(true, "Dessiner les FVG HTF", group = G9)
+fvgBull       = input.color(color.new(color.green, 90), "Haussier", group = G9, inline = "fc")
+fvgBear       = input.color(color.new(color.blue, 90), "Baissier", group = G9, inline = "fc")
+ltf_hide      = input.bool(true, "Masquer les unités inférieures ou égales au graphique", group = G9)
+Border_show   = input.bool(false, "Bordure", group = G9)
+mit_show      = input.bool(false, "Garder les FVG comblés", group = G9, inline = "mi")
+mit_bull      = input.color(color.new(color.gray, 95), "", group = G9, inline = "mi")
+mit_bear      = input.color(color.new(color.gray, 95), "", group = G9, inline = "mi")
+mit_type      = input.string("Wick filled", "comblé quand", options = ["None", "Wick filled", "Body filled", "Wick filled half", "Body filled half"], group = G9)
+CE_show       = input.bool(true, "C.E.", group = G9, inline = "ce")
+CE_color      = input.color(color.new(color.black, 60), "", group = G9, inline = "ce")
+CE_style      = input.string("····", "", options = ["⎯⎯⎯", "----", "····"], group = G9, inline = "ce")
+fl_show       = input.bool(true, "Étiquette", group = G9, inline = "fl")
+fl_color      = input.color(color.new(color.black, 10), "", group = G9, inline = "fl")
+fl_size       = input.string(size.small, "", options = [size.tiny, size.small, size.normal], group = G9, inline = "fl")
+fvgPad        = input.int(4, "Distance de la bougie en cours", minval = 0, group = G9)
+fvgBuf        = input.int(6, "Espace entre les unités", minval = 0, group = G9)
+
+GC = "Setups · commun"
+blockOpen = input.bool(true, "Pas de nouveau signal tant que le précédent n'est pas résolu", group = GC)
+slBufAtr  = input.float(0.10, "Tampon du SL (× ATR 14, au moins le spread)", minval = 0, step = 0.01, group = GC)
+spreadIn  = input.float(0, "Spread (prix, 0 = tolérance POI auto)", minval = 0, step = 0.01, group = GC)
+tpMode    = input.string("Liquidité", "TP", options = ["Liquidité", "R fixe"], group = GC, tooltip = "Liquidité : premier niveau de liquidité non pris dans le sens du trade qui donne au moins le R minimum ; sinon le R fixe.")
+minR      = input.float(2.0, "R minimum", minval = 0.1, step = 0.1, group = GC)
+fixR      = input.float(2.0, "R fixe", minval = 0.1, step = 0.1, group = GC)
+useRR     = input.bool(true, "Filtre R:R ≥ minimum", group = GC)
+tradeBars = input.int(20, "Longueur des zones (bougies)", minval = 2, maxval = 300, group = GC)
+histN     = input.int(10, "Signaux gardés par setup", minval = 1, maxval = 40, group = GC)
+enCol     = input.color(#787B86, "Entrée", group = GC, inline = "c1")
+slCol     = input.color(#F23645, "SL", group = GC, inline = "c1")
+tpCol     = input.color(#089981, "TP", group = GC, inline = "c1")
+slZone    = input.color(color.new(#F23645, 90), "Zone SL", group = GC, inline = "c2")
+tpZone    = input.color(color.new(#089981, 90), "Zone TP", group = GC, inline = "c2")
+trW       = input.int(1, "Épaisseur des lignes", minval = 1, maxval = 4, group = GC)
+arBuy     = input.color(#089981, "Flèche achat", group = GC, inline = "ar")
+arSell    = input.color(#F23645, "vente", group = GC, inline = "ar")
+arSz      = input.string(size.tiny, "taille", options = [size.tiny, size.small, size.normal], group = GC, inline = "ar")
+trTxtSz   = input.string(size.tiny, "Taille de l'étiquette", options = [size.tiny, size.small, size.normal], group = GC)
+trPx      = input.bool(false, "Prix sur l'étiquette", group = GC)
+cisdCol   = input.color(color.new(#787B86, 20), "Ligne CISD (S2, S3)", group = GC, inline = "cd")
+cisdSty   = input.string("Plein", "", options = ["Plein", "Tirets", "Pointillés"], group = GC, inline = "cd")
+cisdW     = input.int(1, "", minval = 1, maxval = 4, group = GC, inline = "cd")
+
+GS1 = "S1 · Rejet sur FVG HTF"
+s1On     = input.bool(true, "Activer S1", group = GS1, tooltip = "FVG HTF actif (unités cochées dans FVG HTF), contact, pas de clôture au-delà du bord éloigné, puis rejet. Entrée à la clôture du rejet, SL derrière le bord éloigné du FVG.")
+s1First  = input.bool(true, "Premier contact seulement", group = GS1)
+s1Rej    = input.string("Mèche", "Rejet", options = ["Mèche", "Englobante", "CISD"], group = GS1)
+s1Wait   = input.int(3, "Bougies après le contact (mèche / englobante)", minval = 0, maxval = 20, group = GS1)
+s1Wick   = input.float(30, "Mèche dans la zone ≥ (% de la bougie)", minval = 0, maxval = 100, group = GS1)
+s1Bias   = input.bool(true, "Filtre biais TRADE", group = GS1, inline = "f")
+s1TT     = input.bool(true, "temps de trading", group = GS1, inline = "f")
+s1PD     = input.bool(true, "premium / discount", group = GS1, inline = "f")
+
+GS2 = "S2 · Sweep de liquidité + CISD"
+s2On     = input.bool(true, "Activer S2", group = GS2, tooltip = "Un niveau de liquidité actif est balayé (mèche au-delà, clôture revenue), puis CISD dans les bougies suivantes. Une clôture au-delà de 1.5 × la marge LuxAlgo annule (fausse cassure).")
+s2Wait   = input.int(10, "Bougies pour le CISD", minval = 1, maxval = 50, group = GS2)
+s2Mode   = input.string("CISD", "Confirmation", options = ["CISD", "MSS"], group = GS2, tooltip = "MSS : clôture au-delà du dernier pivot 3/3 opposé.")
+s2Bias   = input.bool(true, "Filtre biais TRADE", group = GS2, inline = "f")
+s2TT     = input.bool(true, "temps de trading", group = GS2, inline = "f")
+s2PD     = input.bool(false, "premium / discount", group = GS2, inline = "f")
+
+GS3 = "S3 · A+ : liquidité balayée dans un POI / FVG HTF"
+s3On     = input.bool(true, "Activer S3", group = GS3)
+s3Poi    = input.bool(true, "POI ISLB", group = GS3, inline = "z")
+s3Fvg    = input.bool(true, "FVG HTF", group = GS3, inline = "z")
+s3Conf   = input.string("Rejet ou CISD", "Confirmation", options = ["Rejet", "CISD", "Rejet ou CISD"], group = GS3, tooltip = "Rejet : règle de S1 (mode de S1). CISD : règle de S2.")
+s3Bias   = input.bool(true, "Filtre biais TRADE", group = GS3, inline = "f")
+s3TT     = input.bool(true, "temps de trading", group = GS3, inline = "f")
+s3PD     = input.bool(true, "premium / discount", group = GS3, inline = "f")
+
+GS4 = "S4 · PO3 (C2 + CISD)"
+s4On     = input.bool(true, "Activer S4", group = GS4, tooltip = "La bougie HTF en cours (C2) balaie le plus haut (ou le plus bas) de la précédente (C1), puis CISD en sens inverse pendant C2.")
+s4Align  = input.string("Auto", "Alignement", options = ["Auto", "M1 → M15", "M5 → H1", "M15 → H4", "H1 → D1", "Personnalisé"], group = GS4)
+s4Cust   = input.timeframe("60", "Unité personnalisée", group = GS4)
+s4BiasM  = input.string("Neutre", "Biais PO3", options = ["Neutre", "Haussier", "Baissier"], group = GS4)
+s4Meth   = input.string("Mèche", "Projections depuis", options = ["Mèche", "Corps"], group = GS4)
+s4Lvls   = input.string("-1,-2,-2.5,-4", "Projections (écarts)", group = GS4)
+s4TpM    = input.string("Projection", "TP", options = ["Projection", "C1 opposé", "Mode commun"], group = GS4)
+s4TpP    = input.float(-2.0, "Projection du TP", step = 0.5, group = GS4)
+s4BuCol  = input.color(#089981, "Ligne CISD achat", group = GS4, inline = "l1")
+s4BeCol  = input.color(#F23645, "vente", group = GS4, inline = "l1")
+s4Sty    = input.string("Plein", "", options = ["Plein", "Tirets", "Pointillés"], group = GS4, inline = "l2")
+s4W      = input.int(1, "épaisseur", minval = 1, maxval = 4, group = GS4, inline = "l2")
+s4C2Lb   = input.bool(true, "Étiquette C2", group = GS4)
+s4ProjI  = input.bool(true, "Projections (préréglage Personnalisé)", group = GS4, inline = "pj")
+s4PjCol  = input.color(color.new(#787B86, 30), "", group = GS4, inline = "pj")
+s4CdlI   = input.bool(true, "Bougies HTF à droite (préréglage Personnalisé)", group = GS4)
+s4CdlN   = input.int(3, "Nombre de bougies HTF", minval = 1, maxval = 3, group = GS4)
+s4CdlOff = input.int(10, "Décalage (bougies)", minval = 2, maxval = 100, group = GS4)
+s4Up     = input.color(#089981, "Corps haussier", group = GS4, inline = "cu")
+s4Dn     = input.color(#F23645, "baissier", group = GS4, inline = "cu")
+s4Wk     = input.color(#787B86, "Mèche / bord", group = GS4, inline = "cw")
+s4Opens  = input.bool(false, "Traits verticaux d'ouverture HTF", group = GS4, inline = "op")
+s4OpCol  = input.color(color.new(#787B86, 80), "", group = GS4, inline = "op")
+s4Bias   = input.bool(false, "Filtre biais TRADE", group = GS4, inline = "f")
+s4TT     = input.bool(true, "temps de trading", group = GS4, inline = "f")
+s4PD     = input.bool(false, "premium / discount", group = GS4, inline = "f")
+
+GT = "Tableaux des setups"
+tSet     = input.bool(true, "Afficher les tableaux", group = GT)
+tPos     = input.string("Bottom right", "Position", options = ["Top right", "Top left", "Bottom right", "Bottom left", "Middle right", "Middle left"], group = GT, tooltip = "Même position que le tableau BIAS : empilés sous lui.")
+tSz      = input.string(size.tiny, "Taille du texte", options = [size.tiny, size.small, size.normal], group = GT)
+tCompact = input.bool(false, "Mode compact (en-têtes seuls)", group = GT)
+tb1      = input.bool(true, "S1", group = GT, inline = "t")
+tb2      = input.bool(true, "S2", group = GT, inline = "t")
+tb3      = input.bool(true, "S3", group = GT, inline = "t")
+tb4      = input.bool(true, "S4", group = GT, inline = "t")
+
+G5 = "Alertes (à la clôture de la bougie)"
+alS1   = input.bool(true, "Signal S1", group = G5, inline = "s")
+alS2   = input.bool(true, "S2", group = G5, inline = "s")
+alS3   = input.bool(true, "S3", group = G5, inline = "s")
+alS4   = input.bool(true, "S4", group = G5, inline = "s")
+alPend = input.bool(false, "Setup « EN ATTENTE »", group = G5)
+alLvl  = input.bool(false, "Niveau de liquidité balayé", group = G5)
+alFvgT = input.bool(false, "FVG HTF touché", group = G5)
+alWin  = input.bool(false, "Ouvertures / fermetures des fenêtres ISLB", group = G5)
+alPre  = input.bool(false, "Pré-alerte avant chaque fenêtre ISLB", group = G5)
+preMin = input.int(10, "Minutes avant", minval = 1, maxval = 120, group = G5)
+alBias = input.bool(false, "Changement de biais TRADE", group = G5)
+alAsia = alWin
+alLiq  = alWin
+alLdn  = alWin
+alNy   = alWin
+
+// préréglage d'affichage
+bool isFull  = preset == "Complet"
+bool isClean = preset == "Épuré"
+bool swpShow = isFull or (not isClean and swpOnI)
+bool pdShow  = isFull or (not isClean and pdShowI)
+bool oteShow = isFull or (not isClean and oteI)
+bool pjShow  = isFull or (not isClean and s4ProjI)
+bool cdlShow = isFull or (not isClean and s4CdlI)
+bool shTaken = isFull or (not isClean and shTkI)
+
+f_sty(string s) =>
+    s == "Plein" ? line.style_solid : s == "Tirets" ? line.style_dashed : line.style_dotted
+
+// ─────────────────────────── Session times ───────────────────────────
+// Summer: New York clock (Auto) or fixed UTC times (Summer forced).
+// Winter: IST times directly (Asia/Kolkata clock). Manual: New York clock.
+bool   ukWinter = hour(time, "Europe/London") == hour(time, "UTC")
+bool   isMan  = season == "Manual (NY)"
+bool   isWin  = not isMan and (season == "Winter" or (season == "Auto" and ukWinter))
+bool   isAuto = season == "Auto" and not isWin
+bool   isGold = str.contains(syminfo.ticker, "XAU") or str.contains(syminfo.ticker, "GOLD")
+float  sprTol = sprIn > 0 ? sprIn : isGold ? 0.30 : syminfo.mintick * 10
+string tz     = isMan ? "America/New_York" : isWin ? "Asia/Kolkata" : isAuto ? "America/New_York" : "UTC"
+string sAsia  = isMan ? manAs : isWin ? (isGold ? "0430-1130" : "0330-1030") : isAuto ? "1700-0015" : "2100-0415"
+string sLiq1  = isMan ? manFft : isWin ? "1130-1230" : isAuto ? "0100-0200" : "0500-0600"
+string sLiq2  = isMan ? manNyL : isWin ? "1630-1730" : isAuto ? "0700-0800" : "1100-1200"
+string sLdnKZ = isMan ? manKz  : isWin ? "1230-1330" : isAuto ? "0200-0300" : "0600-0700"
+string sLdnTT = isMan ? manLdT : isWin ? "1230-1630" : isAuto ? "0200-0500" : "0600-0900"
+string sLdnS  = isMan ? manLdS : isWin ? "1330-1630" : isAuto ? "0300-0500" : "0700-0900"
+string sNyTT  = isMan ? manNyT : isWin ? "1730-2030" : isAuto ? "0800-1200" : "1200-1600"
+string sNyPM  = isMan ? manNyP : isWin ? "2330-0230" : isAuto ? "1300-1600" : "1700-2000"
+
+// Season for the live clock (session status, countdowns, early warnings): decided by
+// the current time, not the last candle (at the weekend the last candle is Friday's).
+bool   isWinN  = not isMan and (season == "Winter" or (season == "Auto" and hour(timenow, "Europe/London") == hour(timenow, "UTC")))
+bool   isAutoN = season == "Auto" and not isWinN
+string tzN     = isMan ? "America/New_York" : isWinN ? "Asia/Kolkata" : isAutoN ? "America/New_York" : "UTC"
+
+bool canShow = timeframe.isintraday and timeframe.in_seconds() <= maxTF * 60 and time >= startDate
+
+inS(string s) =>
+    not na(time(timeframe.period, s, tz))
+
+// ─────────────────────────── Asia range box ───────────────────────────
+bool inAsia = inS(sAsia)
+// London or New York trading time: the only windows where a POI mitigation counts
+bool inTrd = inS(sLdnTT) or inS(sNyTT)
+var box   aBox = na
+var int   aT0  = na
+var float aHi  = na
+var float aLo  = na
+
+// The box runs from the open of the first Asia candle to the CLOSE of the last one.
+
+if inAsia and not inAsia[1]
+    aHi  := high
+    aLo  := low
+    aT0  := time
+    aBox := canShow and showBox ? box.new(time, high, time_close, low, xloc = xloc.bar_time, bgcolor = boxCol, border_color = boxCol) : na
+else if inAsia
+    aHi := math.max(aHi, high)
+    aLo := math.min(aLo, low)
+    if not na(aBox)
+        box.set_top(aBox, aHi)
+        box.set_bottom(aBox, aLo)
+        box.set_right(aBox, time_close)
+
+// ─────────────────────────── Liquidity candles ───────────────────────────
+// The one-hour candle starting at the liquidity time. On charts below 1H the high
+// and low of that whole hour are used, so the marks match the 1H candle.
+f_liq(string s, float gap) =>
+    bool inW = inS(s)
+    var float h   = na
+    var float l   = na
+    var line  lnH = na
+    var line  lnL = na
+    var label lbH = na
+    var label lbL = na
+    var int   t0  = na
+    if inW and not inW[1]
+        // the liquidity candle has just opened: draw the marks straight away
+        h  := high
+        l  := low
+        t0 := time
+        if canShow and showLiq
+            // centred on the candle, one candle wide on each side, $$$ in the middle
+            int barMs = timeframe.in_seconds() * 1000
+            int xm    = time + int((3600000 - barMs) / 2)
+            int half  = 3600000 + int((3600000 - barMs) / 2)
+            color lbBg = liqLine ? chart.bg_color : color.new(chart.bg_color, 100)
+            lnH := liqLine ? line.new(xm - half, h + gap, xm + half, h + gap, xloc = xloc.bar_time, color = liqCol, width = 1) : na
+            lnL := liqLine ? line.new(xm - half, l - gap, xm + half, l - gap, xloc = xloc.bar_time, color = liqCol, width = 1) : na
+            lbH := label.new(xm, h + gap, "$$$", xloc = xloc.bar_time, style = label.style_label_center, color = lbBg, textcolor = liqCol, size = txtSz)
+            lbL := label.new(xm, l - gap, "$$$", xloc = xloc.bar_time, style = label.style_label_center, color = lbBg, textcolor = liqCol, size = txtSz)
+        else
+            lnH := na
+            lnL := na
+            lbH := na
+            lbL := na
+    else if inW
+        h := math.max(h, high)
+        l := math.min(l, low)
+    // while the candle is open, the marks follow its high and low
+    if inW and not na(lbH)
+        label.set_y(lbH, h + gap)
+        label.set_y(lbL, l - gap)
+        if not na(lnH)
+            line.set_y1(lnH, h + gap)
+            line.set_y2(lnH, h + gap)
+            line.set_y1(lnL, l - gap)
+            line.set_y2(lnL, l - gap)
+    // after the candle: a wick through its high / low sweeps that $$$ → hidden
+    if not inW and hideSw
+        if not na(lbH) and high > h
+            label.delete(lbH)
+            line.delete(lnH)
+            lbH := na
+            lnH := na
+        if not na(lbL) and low < l
+            label.delete(lbL)
+            line.delete(lnL)
+            lbL := na
+            lnL := na
+    [h, l, inW, t0]
+
+float gapNow = ta.atr(14) * liqGap
+[fftH, fftL, inFft, fftT0] = f_liq(sLiq1, gapNow)
+[nycH, nycL, inNyc, nycT0] = f_liq(sLiq2, gapNow)
+
+// ─────────────────────────── Bias ───────────────────────────
+// Bodies only, closed candles only.
+// 1H: major structure (IMG 1.3-01). BOS = body close beyond the highest swing high /
+//     lowest swing low since the last break. CHOCH = body close beyond the protected
+//     swing, which is where the breaking move started.
+// Daily and 4H: internal BOS is valid. Direction of the latest body close through the
+//     most recent swing high or swing low.
+// Daily and 4H agree → that is the bias. Otherwise the 1H bias decides.
+f_trendMajor(int len) =>
+    float hs = lineSw ? close : math.max(open, close)
+    float ls = lineSw ? close : math.min(open, close)
+    float pH = ta.pivothigh(hs, len, len)
+    float pL = ta.pivotlow(ls, len, len)
+    float loK = ta.lowest(ls, len)
+    float hiK = ta.highest(hs, len)
+    var int   tr  = 0
+    var float lPH = na
+    var float lPL = na
+    var float xH  = na
+    var float xL  = na
+    var float pHi = na
+    var float pLo = na
+    var float oLo = na
+    var float oHi = na
+    // origin of the current move
+    if not na(pH)
+        oLo := loK
+    else if na(oLo) or ls < oLo
+        oLo := ls
+    if not na(pL)
+        oHi := hiK
+    else if na(oHi) or hs > oHi
+        oHi := hs
+    if not na(pH)
+        lPH := pH
+        if na(xH) or pH > xH
+            xH := pH
+    if not na(pL)
+        lPL := pL
+        if na(xL) or pL < xL
+            xL := pL
+    int e = 0
+    if tr == 1
+        if not na(pLo) and close < pLo
+            e := -1
+        else if not na(xH) and close > xH
+            e := 1
+    else if tr == -1
+        if not na(pHi) and close > pHi
+            e := 1
+        else if not na(xL) and close < xL
+            e := -1
+    else
+        if not na(xH) and close > xH
+            e := 1
+        else if not na(xL) and close < xL
+            e := -1
+    if e > 0
+        tr  := 1
+        pLo := na(oLo) ? lPL : oLo
+        xH  := na
+        xL  := na
+    if e < 0
+        tr  := -1
+        pHi := na(oHi) ? lPH : oHi
+        xH  := na
+        xL  := na
+    tr
+
+f_trendInt(int len) =>
+    float hs = lineSw ? close : math.max(open, close)
+    float ls = lineSw ? close : math.min(open, close)
+    float pH = ta.pivothigh(hs, len, len)
+    float pL = ta.pivotlow(ls, len, len)
+    var int   tr  = 0
+    var float lPH = na
+    var float lPL = na
+    if not na(pH)
+        lPH := pH
+    if not na(pL)
+        lPL := pL
+    if not na(lPH) and close > lPH
+        tr  := 1
+        lPH := na
+    else if not na(lPL) and close < lPL
+        tr  := -1
+        lPL := na
+    tr
+
+// Bias of each timeframe from its last CLOSED candle.
+// Chart at or below that timeframe: the previous candle of that timeframe (lookahead on).
+// Chart above it (for example 1H bias on a Daily chart): the last finished candle of
+// that timeframe inside the current chart candle, so the value matches lower charts.
+bool aboveD  = timeframe.in_seconds() > 86400
+bool above4H = timeframe.in_seconds() > 14400
+bool above1H = timeframe.in_seconds() > 3600
+int dB_on  = nz(request.security(syminfo.tickerid, "D",   f_trendInt(1)[1], lookahead = barmerge.lookahead_on))
+int h4B_on = nz(request.security(syminfo.tickerid, "240", f_trendInt(1)[1], lookahead = barmerge.lookahead_on))
+int h1B_on = nz(request.security(syminfo.tickerid, "60",  f_trendMajor(swLen)[1], lookahead = barmerge.lookahead_on))
+// The same timeframe's value INCLUDING its current candle. Used on the chart candle that
+// closes that timeframe's candle, so the bias changes on that close and not one candle
+// later. Live: only once the chart candle is confirmed (closed). Bar Replay: the last
+// candle is hours behind the real clock, and replay often shows a candle without a
+// confirmed close, so there it is used straight away.
+// LITE: the previous and the current value come from one request per timeframe
+f_pairI() =>
+    int v = f_trendInt(1)
+    [v[1], v]
+f_pairM() =>
+    int v = f_trendMajor(swLen)
+    [v[1], v]
+[dB_lo0, dB_nw0]   = request.security(syminfo.tickerid, "D",   f_pairI())
+[h4B_lo0, h4B_nw0] = request.security(syminfo.tickerid, "240", f_pairI())
+[h1B_lo0, h1B_nw0] = request.security(syminfo.tickerid, "60",  f_pairM())
+int dB_lo  = nz(dB_lo0)
+int dB_nw  = nz(dB_nw0)
+int h4B_lo = nz(h4B_lo0)
+int h4B_nw = nz(h4B_nw0)
+int h1B_lo = nz(h1B_lo0)
+int h1B_nw = nz(h1B_nw0)
+bool isRep = timenow - time_close > 7200000
+bool nowOK = barstate.isconfirmed or isRep
+f_endOf(string tf) =>
+    time_close == time_close(tf)
+bool endD  = f_endOf("D")
+bool end4H = f_endOf("240")
+bool end1H = f_endOf("60")
+int dB  = aboveD  ? dB_lo  : (endD  and nowOK ? dB_nw  : dB_on)
+int h4B = above4H ? h4B_lo : (end4H and nowOK ? h4B_nw : h4B_on)
+int h1B = above1H ? h1B_lo : (end1H and nowOK ? h1B_nw : h1B_on)
+int tradeB = dB != 0 and dB == h4B ? dB : h1B
+
+biasTxt(int b) => b == 1 ? "BUY" : b == -1 ? "SELL" : "—"
+biasClr(int b) => b == 1 ? buyCol : b == -1 ? sellCol : biasCol
+
+// ═════════════════════════════════════════════════════════════════════════════════════
+//  LIQUIDITY POINTS
+// ═════════════════════════════════════════════════════════════════════════════════════
+// London killzone and London session ranges: high / low of the window, kept until the
+// same window opens again.
+f_rng(string s) =>
+    bool w = inS(s)
+    var float h = na
+    var float l = na
+    var int   t0 = na
+    if w and not w[1]
+        h  := high
+        l  := low
+        t0 := time
+    else if w
+        h := math.max(h, high)
+        l := math.min(l, low)
+    [h, l, w, t0]
+
+[kzH, kzL, inKz, kzT0]      = f_rng(sLdnKZ)
+[ldnH, ldnL, inLdn, ldnT0]  = f_rng(sLdnS)
+
+// Previous day / week / month high and low (closed candles) and yesterday's daily ATR.
+[pdH, pdL, dATR] = request.security(syminfo.tickerid, "D", [high[1], low[1], ta.atr(14)[1]], lookahead = barmerge.lookahead_on)
+[pwH, pwL] = request.security(syminfo.tickerid, "W", [high[1], low[1]], lookahead = barmerge.lookahead_on)
+[pmH, pmL] = request.security(syminfo.tickerid, "M", [high[1], low[1]], lookahead = barmerge.lookahead_on)
+float pd50 = (pdH + pdL) / 2
+// NY PM (Session Sweeps) : optional range, same rules as the London ranges
+[npH0, npL0, inNp0, npT00] = f_rng(sNyPM)
+float npH  = nyPmOn ? npH0 : na
+float npL  = nyPmOn ? npL0 : na
+bool  inNp = nyPmOn and inNp0
+int   npT0 = nyPmOn ? npT00 : na
+
+// 15m equal highs / lows: two swing points (2 candles each side) within the tolerance,
+// untouched, formed in the last 24 hours. The latest pair on each side.
+f_eq(float tolM) =>
+    float a  = ta.atr(14)
+    float ph = ta.pivothigh(high, 2, 2)
+    float pl = ta.pivotlow(low, 2, 2)
+    var array<float> hp  = array.new<float>()
+    var array<int>   htm = array.new<int>()
+    var array<float> lq  = array.new<float>()
+    var array<int>   ltm = array.new<int>()
+    var float eqH  = na
+    var int   eqHt = na
+    var float eqL  = na
+    var int   eqLt = na
+    if hp.size() > 0
+        for i = hp.size() - 1 to 0
+            if high > hp.get(i)
+                hp.remove(i)
+                htm.remove(i)
+    if lq.size() > 0
+        for i = lq.size() - 1 to 0
+            if low < lq.get(i)
+                lq.remove(i)
+                ltm.remove(i)
+    if not na(eqH) and high > eqH
+        eqH := na
+    if not na(eqL) and low < eqL
+        eqL := na
+    if not na(ph)
+        int pt = time[2]
+        if hp.size() > 0
+            for i = 0 to hp.size() - 1
+                if math.abs(ph - hp.get(i)) <= tolM * a and pt - htm.get(i) <= 86400000
+                    eqH  := math.max(ph, hp.get(i))
+                    eqHt := pt
+        hp.push(ph)
+        htm.push(pt)
+        if hp.size() > 8
+            hp.shift()
+            htm.shift()
+    if not na(pl)
+        int pt = time[2]
+        if lq.size() > 0
+            for i = 0 to lq.size() - 1
+                if math.abs(pl - lq.get(i)) <= tolM * a and pt - ltm.get(i) <= 86400000
+                    eqL  := math.min(pl, lq.get(i))
+                    eqLt := pt
+        lq.push(pl)
+        ltm.push(pt)
+        if lq.size() > 8
+            lq.shift()
+            ltm.shift()
+    if not na(eqHt) and time - eqHt > 86400000
+        eqH := na
+    if not na(eqLt) and time - eqLt > 86400000
+        eqL := na
+    [eqH, eqL]
+
+[eqH, eqL] = request.security(syminfo.tickerid, "15", f_eq(eqTol))
+
+// 1H ATR, for the "stacked" distance.
+float atr1H = request.security(syminfo.tickerid, "60", ta.atr(14)[1], lookahead = barmerge.lookahead_on)
+float cDist = clMult * nz(atr1H, ta.atr(14))
+
+// On charts above 1H the session levels are read from 15m candles, so the Asia,
+// Frankfurt, killzone, London and NY liquidity levels are exact on 4H and Daily too.
+f_sess() =>
+    [a1, a2, a3, a4] = f_rng(sAsia)
+    [f1, f2, f3, f4] = f_rng(sLiq1)
+    [n1, n2, n3, n4] = f_rng(sLiq2)
+    [k1, k2, k3, k4] = f_rng(sLdnKZ)
+    [l1, l2, l3, l4] = f_rng(sLdnS)
+    [a1, a2, a3, a4, f1, f2, f3, f4, n1, n2, n3, n4, k1, k2, k3, k4, l1, l2, l3, l4]
+
+[xaH, xaL, xinA, xaT, xfH, xfL, xinF, xfT, xnH, xnL, xinN, xnT, xkH, xkL, xinK, xkT, xlH, xlL, xinL, xlT] = request.security(syminfo.tickerid, "15", f_sess())
+bool hiTF = timeframe.in_seconds() > 3600
+float L_aHi   = hiTF ? xaH : aHi
+float L_aLo   = hiTF ? xaL : aLo
+bool  L_inAsia = hiTF ? xinA : inAsia
+int   L_aT0   = hiTF ? xaT : aT0
+float L_fftH  = hiTF ? xfH : fftH
+float L_fftL  = hiTF ? xfL : fftL
+bool  L_inFft = hiTF ? xinF : inFft
+int   L_fftT0 = hiTF ? xfT : fftT0
+float L_nycH  = hiTF ? xnH : nycH
+float L_nycL  = hiTF ? xnL : nycL
+bool  L_inNyc = hiTF ? xinN : inNyc
+int   L_nycT0 = hiTF ? xnT : nycT0
+float L_kzH   = hiTF ? xkH : kzH
+float L_kzL   = hiTF ? xkL : kzL
+bool  L_inKz  = hiTF ? xinK : inKz
+int   L_kzT0  = hiTF ? xkT : kzT0
+float L_ldnH  = hiTF ? xlH : ldnH
+float L_ldnL  = hiTF ? xlL : ldnL
+bool  L_inLdn = hiTF ? xinL : inLdn
+int   L_ldnT0 = hiTF ? xlT : ldnT0
+
+// Taken = a wick has gone through the level since it last changed.
+f_tk(float lvl, bool isH) =>
+    var float last = na
+    var bool  tk   = false
+    if na(lvl)
+        last := na
+        tk   := false
+    else
+        if na(last) or lvl != last
+            last := lvl
+            tk   := false
+        if isH ? high > lvl : low < lvl
+            tk := true
+    tk
+
+// Chart levels: taken flag, taken on this candle, time of the take.
+f_tk2(float lvl, bool isH) =>
+    var float last = na
+    var bool  tk   = false
+    var int   tkT  = na
+    bool now = false
+    if na(lvl)
+        last := na
+        tk   := false
+        tkT  := na
+    else
+        if na(last) or lvl != last
+            last := lvl
+            tk   := false
+            tkT  := na
+        if (isH ? high > lvl : low < lvl) and not tk
+            tk   := true
+            tkT  := time
+            now  := true
+    [tk, now, tkT]
+
+[tkAH,  nwAH,  ttAH]  = f_tk2(L_aHi, true)
+[tkAL,  nwAL,  ttAL]  = f_tk2(L_aLo, false)
+[tkFH,  nwFH,  ttFH]  = f_tk2(L_fftH, true)
+[tkFL,  nwFL,  ttFL]  = f_tk2(L_fftL, false)
+[tkNH,  nwNH,  ttNH]  = f_tk2(L_nycH, true)
+[tkNL,  nwNL,  ttNL]  = f_tk2(L_nycL, false)
+[tkKH,  nwKH,  ttKH]  = f_tk2(L_kzH, true)
+[tkKL,  nwKL,  ttKL]  = f_tk2(L_kzL, false)
+[tkLH,  nwLH,  ttLH]  = f_tk2(L_ldnH, true)
+[tkLL,  nwLL,  ttLL]  = f_tk2(L_ldnL, false)
+[tkPDH, nwPDH, ttPDH] = f_tk2(pdH, true)
+[tkPDL, nwPDL, ttPDL] = f_tk2(pdL, false)
+[tkPWH, nwPWH, ttPWH] = f_tk2(pwH, true)
+[tkPWL, nwPWL, ttPWL] = f_tk2(pwL, false)
+[tkEH,  nwEH,  ttEH]  = f_tk2(eqH, true)
+[tkEL,  nwEL,  ttEL]  = f_tk2(eqL, false)
+[tkPMH, nwPMH, ttPMH] = f_tk2(pmH, true)
+[tkPML, nwPML, ttPML] = f_tk2(pmL, false)
+[tkNPH, nwNPH, ttNPH] = f_tk2(npH, true)
+[tkNPL, nwNPL, ttNPL] = f_tk2(npL, false)
+
+// Live, untouched levels (session levels only once their window has closed).
+bool okAH  = uAsia and not L_inAsia and not tkAH
+bool okAL  = uAsia and not L_inAsia and not tkAL
+bool okFH  = uFft and not L_inFft and not tkFH
+bool okFL  = uFft and not L_inFft and not tkFL
+bool okNH  = uNyc and not L_inNyc and not tkNH
+bool okNL  = uNyc and not L_inNyc and not tkNL
+bool okKH  = uKz and not L_inKz and not tkKH
+bool okKL  = uKz and not L_inKz and not tkKL
+bool okLH  = uLdn and not L_inLdn and not tkLH
+bool okLL  = uLdn and not L_inLdn and not tkLL
+bool okPDH = uPd and not tkPDH
+bool okPDL = uPd and not tkPDL
+bool okPWH = uPw and not tkPWH
+bool okPWL = uPw and not tkPWL
+bool okEH  = uEq and not tkEH
+bool okEL  = uEq and not tkEL
+bool okPMH = uPm and not tkPMH
+bool okPML = uPm and not tkPML
+bool okNPH = uNp and nyPmOn and not inNp and not tkNPH
+bool okNPL = uNp and nyPmOn and not inNp and not tkNPL
+
+// The same price from two sources (for example Asia high = previous day high) counts once.
+f_lvl(array<float> lp, array<string> ln, array<bool> lh, float p, string nm, bool isH, bool ok) =>
+    if ok and not na(p)
+        int k = -1
+        if lp.size() > 0
+            for i = 0 to lp.size() - 1
+                if lh.get(i) == isH and math.abs(lp.get(i) - p) <= syminfo.mintick * 2
+                    k := i
+        if k >= 0
+            ln.set(k, ln.get(k) + "/" + nm)
+        else
+            lp.push(p)
+            ln.push(nm)
+            lh.push(isH)
+    true
+
+array<float>  lvP = array.new<float>()
+array<string> lvN = array.new<string>()
+array<bool>   lvH = array.new<bool>()
+f_lvl(lvP, lvN, lvH, L_aHi,  "Asia H", true,  okAH)
+f_lvl(lvP, lvN, lvH, L_aLo,  "Asia L", false, okAL)
+f_lvl(lvP, lvN, lvH, L_fftH, "Frankfurt H", true, okFH)
+f_lvl(lvP, lvN, lvH, L_fftL, "Frankfurt L", false, okFL)
+f_lvl(lvP, lvN, lvH, L_nycH, "NY liq H", true, okNH)
+f_lvl(lvP, lvN, lvH, L_nycL, "NY liq L", false, okNL)
+f_lvl(lvP, lvN, lvH, L_kzH,  "KZ H",   true,  okKH)
+f_lvl(lvP, lvN, lvH, L_kzL,  "KZ L",   false, okKL)
+f_lvl(lvP, lvN, lvH, L_ldnH, "London H", true, okLH)
+f_lvl(lvP, lvN, lvH, L_ldnL, "London L", false, okLL)
+f_lvl(lvP, lvN, lvH, pdH,  "PDH",    true,  okPDH)
+f_lvl(lvP, lvN, lvH, pdL,  "PDL",    false, okPDL)
+f_lvl(lvP, lvN, lvH, pwH,  "PWH",    true,  okPWH)
+f_lvl(lvP, lvN, lvH, pwL,  "PWL",    false, okPWL)
+f_lvl(lvP, lvN, lvH, eqH,  "EQH",    true,  okEH)
+f_lvl(lvP, lvN, lvH, eqL,  "EQL",    false, okEL)
+// CX additions: previous month and NY PM (not part of the ISLB POI engine)
+f_lvl(lvP, lvN, lvH, pmH,  "PMH",    true,  okPMH)
+f_lvl(lvP, lvN, lvH, pmL,  "PML",    false, okPML)
+f_lvl(lvP, lvN, lvH, npH,  "NY PM H", true, okNPH)
+f_lvl(lvP, lvN, lvH, npL,  "NY PM L", false, okNPL)
+
+// ─────────────────────────── Levels swept on this candle ───────────────────────────
+// A level that was live before this candle and that a wick goes through now.
+array<float>  evP = array.new<float>()
+array<string> evN = array.new<string>()
+array<bool>   evH = array.new<bool>()
+array<int>    evX = array.new<int>()
+f_ev(float p, string nm, bool isH, bool on, int xs) =>
+    if on and not na(p)
+        int k = -1
+        if evP.size() > 0
+            for i = 0 to evP.size() - 1
+                if evH.get(i) == isH and math.abs(evP.get(i) - p) <= syminfo.mintick * 2
+                    k := i
+        if k >= 0
+            evN.set(k, evN.get(k) + "/" + nm)
+        else
+            evP.push(p)
+            evN.push(nm)
+            evH.push(isH)
+            evX.push(xs)
+    true
+f_ev(L_aHi,  "Asia H",      true,  uAsia and not L_inAsia and nwAH, L_aT0)
+f_ev(L_aLo,  "Asia L",      false, uAsia and not L_inAsia and nwAL, L_aT0)
+f_ev(L_fftH, "Frankfurt H", true,  uFft and not L_inFft and nwFH, L_fftT0)
+f_ev(L_fftL, "Frankfurt L", false, uFft and not L_inFft and nwFL, L_fftT0)
+f_ev(L_nycH, "NY liq H",    true,  uNyc and not L_inNyc and nwNH, L_nycT0)
+f_ev(L_nycL, "NY liq L",    false, uNyc and not L_inNyc and nwNL, L_nycT0)
+f_ev(L_kzH,  "KZ H",        true,  uKz and not L_inKz and nwKH, L_kzT0)
+f_ev(L_kzL,  "KZ L",        false, uKz and not L_inKz and nwKL, L_kzT0)
+f_ev(L_ldnH, "London H",    true,  uLdn and not L_inLdn and nwLH, L_ldnT0)
+f_ev(L_ldnL, "London L",    false, uLdn and not L_inLdn and nwLL, L_ldnT0)
+f_ev(pdH,    "PDH",         true,  uPd and nwPDH, na)
+f_ev(pdL,    "PDL",         false, uPd and nwPDL, na)
+f_ev(pwH,    "PWH",         true,  uPw and nwPWH, na)
+f_ev(pwL,    "PWL",         false, uPw and nwPWL, na)
+f_ev(eqH,    "EQH",         true,  uEq and nwEH, na)
+f_ev(eqL,    "EQL",         false, uEq and nwEL, na)
+f_ev(pmH,    "PMH",         true,  uPm and nwPMH, na)
+f_ev(pmL,    "PML",         false, uPm and nwPML, na)
+f_ev(npH,    "NY PM H",     true,  uNp and nyPmOn and not inNp and nwNPH, npT0)
+f_ev(npL,    "NY PM L",     false, uNp and nyPmOn and not inNp and nwNPL, npT0)
+
+// Levels swept today (from today's Asia session on): price, name, side, time, start.
+var array<float>  tdP = array.new<float>()
+var array<string> tdN = array.new<string>()
+var array<bool>   tdH = array.new<bool>()
+var array<int>    tdT = array.new<int>()
+var array<int>    tdB = array.new<int>()
+var array<int>    tdX = array.new<int>()
+if ta.change(L_aT0) != 0
+    tdP.clear()
+    tdN.clear()
+    tdH.clear()
+    tdT.clear()
+    tdB.clear()
+    tdX.clear()
+if evP.size() > 0
+    for i = 0 to evP.size() - 1
+        tdP.push(evP.get(i))
+        tdN.push(evN.get(i))
+        tdH.push(evH.get(i))
+        tdT.push(time)
+        tdB.push(bar_index)
+        tdX.push(evX.get(i))
+    while tdP.size() > 40
+        tdP.shift()
+        tdN.shift()
+        tdH.shift()
+        tdT.shift()
+        tdB.shift()
+        tdX.shift()
+
+// Count the untouched levels between price and the POI on the setup side.
+// dir -1 = sell setup: highs above price. dir 1 = buy setup: lows below price.
+// Returns: biggest stack (levels within the stacked distance), all levels, stack names.
+f_eval(array<float> lvP, array<string> lvN, array<bool> lvH, int dir, float nearP, float farP, float cd) =>
+    array<float>  cp = array.new<float>()
+    array<string> cn = array.new<string>()
+    float lo = math.min(nearP, farP)
+    float hi = math.max(nearP, farP)
+    bool wantH = dir == -1
+    if lvP.size() > 0
+        for i = 0 to lvP.size() - 1
+            float p = lvP.get(i)
+            if lvH.get(i) == wantH and p > lo and p < hi
+                cp.push(p)
+                cn.push(lvN.get(i))
+    int tot = cp.size()
+    int best = 0
+    string bn = ""
+    float bd = na
+    if tot > 0
+        for i = 0 to tot - 1
+            float base = cp.get(i)
+            int c = 0
+            string nm = ""
+            float mx = base
+            for j = 0 to tot - 1
+                float pj = cp.get(j)
+                if pj >= base and pj - base <= cd
+                    c += 1
+                    nm := nm == "" ? cn.get(j) : nm + " + " + cn.get(j)
+                    mx := math.max(mx, pj)
+            float d = math.abs(farP - (base + mx) / 2)
+            if c > best or (c == best and (na(bd) or d < bd))
+                best := c
+                bn   := nm
+                bd   := d
+    [best, tot, bn]
+
+f_dec(int best, int tot) =>
+    best >= minStk ? "Direct" : "Confirmation"
+
+// ═════════════════════════════════════════════════════════════════════════════════════
+//  POI  (1H, 4H, Daily) — the notebook POI (Ch 3), from closed candles of that timeframe
+// ═════════════════════════════════════════════════════════════════════════════════════
+//  OB   (3.1) = opening price of the last trend candle at a top / bottom (of the last
+//               "look" candles, within the tolerance); the reversal candle closes beyond
+//               it (body to body).
+//  RB   (3.2) = opening price of the first reversal candle, with a wick toward the turn.
+//  BB   (3.5) = a mitigated OB that a body closes through: the OB opening price becomes
+//               a breaker on the other side.
+//  CRB        = opening price of a trend candle (after another trend candle) with a wick
+//               against the trend. Latest only. 4H and above.
+//  IFVG (3.4) = candle 1 has a wick (any size); candle 2's body closes beyond it.
+//               Level = candle 1's wick tip. 4H and above.
+//  Only untouched POI are passed on: the three nearest above price (sell) and below
+//  price (buy). The chart keeps the bias side and only a POI with untouched liquidity
+//  between price and it.
+type Poi
+    float y
+    float y2
+    int   dir    // 1 = support (buy), -1 = resistance (sell)
+    int   kind   // 1 OB, 2 BB, 3 RB, 4 CRB, 5 IFVG
+    int   t
+    int   te     // time it was touched (mitigated)
+    int   d      // trading-day number of its candle
+
+f_pick(array<float> key, bool wantMax, array<int> used) =>
+    int k = -1
+    if key.size() > 0
+        for i = 0 to key.size() - 1
+            if not used.includes(i)
+                if k == -1 or (wantMax ? key.get(i) > key.get(k) : key.get(i) < key.get(k))
+                    k := i
+    if k >= 0
+        used.push(k)
+    k
+
+// body-based trend, for the continuation RB
+f_trendC(int len) =>
+    float hs = math.max(open, close)
+    float ls = math.min(open, close)
+    float pH = ta.pivothigh(hs, len, len)
+    float pL = ta.pivotlow(ls, len, len)
+    var int   tr  = 0
+    var float lPH = na
+    var float lPL = na
+    if not na(pH)
+        lPH := pH
+    if not na(pL)
+        lPL := pL
+    if not na(lPH) and close > lPH
+        tr  := 1
+        lPH := na
+    else if not na(lPL) and close < lPL
+        tr  := -1
+        lPL := na
+    tr
+
+f_poi(int look, bool uOB, bool uBB, bool uRB, bool uCRB, bool uIF, float wickPct) =>
+    var array<Poi> ps = array.new<Poi>()
+    // trading-day counter (a new day = a new daily candle), for the age in trading days
+    bool nd = ta.change(time("D")) != 0
+    var int dN = 0
+    if nd
+        dN += 1
+    float hiW = ta.highest(high, look)
+    float loW = ta.lowest(low, look)
+    int   tr  = f_trendC(2)
+    float tolP = obTol * syminfo.mintick * 10
+    // LITE: a POI older than the age limit is never shown, so POI are only built and
+    // tracked over the last few days of history (plus a margin for weekends and
+    // holidays). Same result on the last candle, far less work on a long history.
+    int  winD = ageMode == "Trading days" ? int(math.ceil(maxAgeD * 1.4)) + 4 : maxAgeD + 2
+    bool act  = time >= last_bar_time - winD * 86400000
+    // breaks and new POI only on a closed candle of this timeframe (no live candle).
+    // Bar Replay shows the last candle without a confirmed close, so there the last
+    // candle counts straight away (otherwise a BB or OB appears one step late).
+    bool cf = (barstate.isconfirmed or timenow - time_close > 7200000) and act
+    // average body of the last 20 candles: a big candle is not an order block
+    float avgB = ta.sma(math.abs(close - open), 20)
+    // 1) touched / broken
+    if ps.size() > 0
+        for i = ps.size() - 1 to 0
+            Poi p = ps.get(i)
+            if p.dir == 0
+                continue
+            // touched = price reached the POI, within the spread tolerance
+            bool touched = p.dir == -1 ? high >= p.y - sprTol : low <= p.y + sprTol
+            // broken = a body closes through the whole POI candle body (note 3.5: the OB
+            // fails when the market closes that candle with its body). For an OB that is
+            // beyond its open AND its close; a close between the two is not a break.
+            bool broken  = p.dir == -1 ? close > math.max(p.y, p.y2) : close < math.min(p.y, p.y2)
+            if na(p.te) and touched
+                p.te := time
+            // a touched (mitigated) POI stays active until a body closes through it
+            if not na(p.te) and broken and cf
+                // mitigated OB closed through → breaker block on the other side
+                // BB level = the far edge of the OB candle's body (its close, which is
+                // the open of the next candle): above the OB line for a failed bearish
+                // OB, below it for a failed bullish OB (as marked in notes 3.5 charts)
+                if (p.kind == 1 or p.kind == 6) and uBB
+                    ps.push(Poi.new(p.y2, p.y, -p.dir, 2, p.t, na, p.d))
+                p.dir := 0
+    // 2) bearish OB + RB at a top
+    int bj = na
+    if close < open and act
+        for j = 1 to 6
+            if close[j] > open[j]
+                bj := j
+                break
+    if not na(bj)
+        float lvl = open[bj]
+        bool  ok  = close < lvl
+        float wHi = math.max(high, high[bj])
+        if bj > 1
+            for k = 1 to bj - 1
+                if close[k] < lvl
+                    ok := false
+                wHi := math.max(wHi, high[k])
+        if ok and (not obTop or wHi >= hiW - tolP) and cf
+            // a big candle is not an OB (kind 6 = hidden), but it is still tracked so
+            // its failure can make a BB
+            bool big = obBig > 0 and math.abs(close[bj] - open[bj]) > obBig * nz(avgB[bj], 1e10)
+            // OB only when the FIRST reversal candle (the one right after the OB candle)
+            // closes beyond its opening price; a later close does not make an OB
+            if bj == 1 and uOB and not big
+                ps.push(Poi.new(lvl, close[bj], -1, 1, time[bj], na, dN[bj]))
+            else if bj == 1 and uBB
+                ps.push(Poi.new(lvl, close[bj], -1, 6, time[bj], na, dN[bj]))
+            int r = bj - 1
+            if uRB and high[r] > math.max(open[r], close[r])
+                // the RB is only confirmed a few candles later: a candle after the RB
+                // candle that already reached it (the confirming candle included) has
+                // mitigated it
+                int tT = na
+                if r >= 1
+                    for q = r - 1 to 0
+                        if high[q] >= open[r] - sprTol
+                            tT := time[q]
+                            break
+                ps.push(Poi.new(open[r], open[r], -1, 3, time[r], tT, dN[r]))
+    // 3) bullish OB + RB at a bottom
+    int uj = na
+    if close > open and act
+        for j = 1 to 6
+            if close[j] < open[j]
+                uj := j
+                break
+    if not na(uj)
+        float lvl = open[uj]
+        bool  ok  = close > lvl
+        float wLo = math.min(low, low[uj])
+        if uj > 1
+            for k = 1 to uj - 1
+                if close[k] > lvl
+                    ok := false
+                wLo := math.min(wLo, low[k])
+        if ok and (not obTop or wLo <= loW + tolP) and cf
+            // a big candle is not an OB (kind 6 = hidden), but it is still tracked so
+            // its failure can make a BB
+            bool big = obBig > 0 and math.abs(close[uj] - open[uj]) > obBig * nz(avgB[uj], 1e10)
+            // OB only when the FIRST reversal candle (the one right after the OB candle)
+            // closes beyond its opening price; a later close does not make an OB
+            if uj == 1 and uOB and not big
+                ps.push(Poi.new(lvl, close[uj], 1, 1, time[uj], na, dN[uj]))
+            else if uj == 1 and uBB
+                ps.push(Poi.new(lvl, close[uj], 1, 6, time[uj], na, dN[uj]))
+            int r = uj - 1
+            if uRB and low[r] < math.min(open[r], close[r])
+                // the RB is only confirmed a few candles later: a candle after the RB
+                // candle that already reached it (the confirming candle included) has
+                // mitigated it
+                int tT = na
+                if r >= 1
+                    for q = r - 1 to 0
+                        if low[q] <= open[r] + sprTol
+                            tT := time[q]
+                            break
+                ps.push(Poi.new(open[r], open[r], 1, 3, time[r], tT, dN[r]))
+    // 4) continuation RB (latest only)
+    if uCRB
+        bool cDn = tr == -1 and close < open and close[1] < open[1] and high > open
+        bool cUp = tr == 1 and close > open and close[1] > open[1] and low < open
+        if (cDn or cUp) and cf
+            if ps.size() > 0
+                for i = ps.size() - 1 to 0
+                    if ps.get(i).kind == 4
+                        ps.remove(i)
+            ps.push(Poi.new(open, open, cDn ? -1 : 1, 4, time, na, dN))
+    // 5) IFVG
+    if uIF and cf
+        float bTop1 = math.max(open[1], close[1])
+        float bBot1 = math.min(open[1], close[1])
+        float rng1  = high[1] - low[1]
+        // any visible wick on candle 1 (no size rule: you judge the wick yourself)
+        bool  upW   = rng1 > 0 and high[1] > bTop1
+        bool  dnW   = rng1 > 0 and low[1] < bBot1
+        if upW and close > open and close > high[1]
+            ps.push(Poi.new(high[1], bTop1, 1, 5, time[1], na, dN[1]))
+        if dnW and close < open and close < low[1]
+            ps.push(Poi.new(low[1], bBot1, -1, 5, time[1], na, dN[1]))
+    // closed POI and POI older than the age limit out, keep the list short
+    int ageMs = maxAgeD * 86400000
+    if ps.size() > 0
+        for i = ps.size() - 1 to 0
+            Poi q = ps.get(i)
+            bool old = ageMode == "Trading days" ? dN - q.d > maxAgeD : time - q.t > ageMs
+            if q.dir == 0 or old
+                ps.remove(i)
+    // keep the list short by dropping the POI FARTHEST from price (not the oldest),
+    // so an old but nearby untouched POI is never lost
+    while ps.size() > 80
+        int far = 0
+        float fd = -1.0
+        for i = 0 to ps.size() - 1
+            float d = math.abs(ps.get(i).y - close)
+            if d > fd
+                fd  := d
+                far := i
+        ps.remove(far)
+    // 6) per side: the three nearest untouched POI beyond price, and the two nearest
+    //    touched (mitigated) POI that no body has closed through yet, with touch time
+    array<float> uSY = array.new<float>()
+    array<float> uSZ = array.new<float>()
+    array<float> uBZ = array.new<float>()
+    array<float> mSZ = array.new<float>()
+    array<float> mBZ = array.new<float>()
+    array<int>   uST = array.new<int>()
+    array<int>   uSK = array.new<int>()
+    array<float> uSD = array.new<float>()
+    array<float> uBY = array.new<float>()
+    array<int>   uBT = array.new<int>()
+    array<int>   uBK = array.new<int>()
+    array<float> uBD = array.new<float>()
+    array<float> mSY = array.new<float>()
+    array<int>   mST = array.new<int>()
+    array<int>   mSK = array.new<int>()
+    array<int>   mSE = array.new<int>()
+    array<float> mSD = array.new<float>()
+    array<float> mBY = array.new<float>()
+    array<int>   mBT = array.new<int>()
+    array<int>   mBK = array.new<int>()
+    array<int>   mBE = array.new<int>()
+    array<float> mBD = array.new<float>()
+    if ps.size() > 0
+        for p in ps
+            // kind 6 = a big candle's OB: never shown, only waits to become a BB
+            if p.kind == 6
+                continue
+            if na(p.te)
+                if p.dir == -1 and p.y > close
+                    uSY.push(p.y)
+                    uSZ.push(p.y2)
+                    uST.push(p.t)
+                    uSK.push(p.kind)
+                    uSD.push(p.y - close)
+                if p.dir == 1 and p.y < close
+                    uBY.push(p.y)
+                    uBZ.push(p.y2)
+                    uBT.push(p.t)
+                    uBK.push(p.kind)
+                    uBD.push(close - p.y)
+            else
+                if p.dir == -1
+                    mSY.push(p.y)
+                    mSZ.push(p.y2)
+                    mST.push(p.t)
+                    mSK.push(p.kind)
+                    mSE.push(p.te)
+                    mSD.push(math.abs(p.y - close))
+                if p.dir == 1
+                    mBY.push(p.y)
+                    mBZ.push(p.y2)
+                    mBT.push(p.t)
+                    mBK.push(p.kind)
+                    mBE.push(p.te)
+                    mBD.push(math.abs(p.y - close))
+    array<int> q1 = array.new<int>()
+    array<int> q2 = array.new<int>()
+    array<int> q3 = array.new<int>()
+    array<int> q4 = array.new<int>()
+    int b1 = f_pick(uBD, false, q1)
+    int b2 = f_pick(uBD, false, q1)
+    int b3 = f_pick(uBD, false, q1)
+    int c1 = f_pick(mBD, false, q2)
+    int c2 = f_pick(mBD, false, q2)
+    int s1 = f_pick(uSD, false, q3)
+    int s2 = f_pick(uSD, false, q3)
+    int s3 = f_pick(uSD, false, q3)
+    int d1 = f_pick(mSD, false, q4)
+    int d2 = f_pick(mSD, false, q4)
+    [b1 >= 0 ? uBY.get(b1) : na, b1 >= 0 ? uBT.get(b1) : na, b1 >= 0 ? uBK.get(b1) : 0,
+     b2 >= 0 ? uBY.get(b2) : na, b2 >= 0 ? uBT.get(b2) : na, b2 >= 0 ? uBK.get(b2) : 0,
+     b3 >= 0 ? uBY.get(b3) : na, b3 >= 0 ? uBT.get(b3) : na, b3 >= 0 ? uBK.get(b3) : 0,
+     c1 >= 0 ? mBY.get(c1) : na, c1 >= 0 ? mBT.get(c1) : na, c1 >= 0 ? mBK.get(c1) : 0, c1 >= 0 ? mBE.get(c1) : na,
+     c2 >= 0 ? mBY.get(c2) : na, c2 >= 0 ? mBT.get(c2) : na, c2 >= 0 ? mBK.get(c2) : 0, c2 >= 0 ? mBE.get(c2) : na,
+     s1 >= 0 ? uSY.get(s1) : na, s1 >= 0 ? uST.get(s1) : na, s1 >= 0 ? uSK.get(s1) : 0,
+     s2 >= 0 ? uSY.get(s2) : na, s2 >= 0 ? uST.get(s2) : na, s2 >= 0 ? uSK.get(s2) : 0,
+     s3 >= 0 ? uSY.get(s3) : na, s3 >= 0 ? uST.get(s3) : na, s3 >= 0 ? uSK.get(s3) : 0,
+     d1 >= 0 ? mSY.get(d1) : na, d1 >= 0 ? mST.get(d1) : na, d1 >= 0 ? mSK.get(d1) : 0, d1 >= 0 ? mSE.get(d1) : na,
+     d2 >= 0 ? mSY.get(d2) : na, d2 >= 0 ? mST.get(d2) : na, d2 >= 0 ? mSK.get(d2) : 0, d2 >= 0 ? mSE.get(d2) : na,
+     b1 >= 0 ? uBZ.get(b1) : na, b2 >= 0 ? uBZ.get(b2) : na, b3 >= 0 ? uBZ.get(b3) : na, c1 >= 0 ? mBZ.get(c1) : na, c2 >= 0 ? mBZ.get(c2) : na,
+     s1 >= 0 ? uSZ.get(s1) : na, s2 >= 0 ? uSZ.get(s2) : na, s3 >= 0 ? uSZ.get(s3) : na, d1 >= 0 ? mSZ.get(d1) : na, d2 >= 0 ? mSZ.get(d2) : na]
+
+// ═════════════════════════════════════════════════════════════════════════════════════
+//  ENTRY-TYPE ENGINE — runs on 15m candles, so every chart timeframe (1m … Daily) shows
+//  the same POI and the same DIRECT / CONFIRMATION call.
+// ═════════════════════════════════════════════════════════════════════════════════════
+// Untouched candidate: kept when it is beyond price and untouched liquidity sits between
+// price and it. Its strongest build-up is remembered for when it gets touched.
+f_u(int dir, float y, int x, array<float> lp, array<string> ln, array<bool> lh, float cd, float maxD, array<float> mY, array<int> mX, array<int> mB, array<int> mT, array<string> mN, array<int> mQ, int dayStart) =>
+    bool ok = false
+    int best = 0
+    int tot = 0
+    string nm = ""
+    // reachable today: within maxD (× daily ATR) of price
+    if not na(y) and not na(x) and (dir == -1 ? y > close : y < close) and (na(maxD) or math.abs(y - close) <= maxD)
+        int idx = -1
+        if mY.size() > 0
+            for i = 0 to mY.size() - 1
+                if mY.get(i) == y and mX.get(i) == x
+                    idx := i
+        [bs, tt, nn] = f_eval(lp, ln, lh, dir, close, y, cd)
+        if tt >= 1
+            ok := true
+            if idx < 0
+                mY.push(y)
+                mX.push(x)
+                mB.push(bs)
+                mT.push(tt)
+                mN.push(nn)
+                mQ.push(time)
+                if mY.size() > 60
+                    mY.shift()
+                    mX.shift()
+                    mB.shift()
+                    mT.shift()
+                    mN.shift()
+                    mQ.shift()
+                best := bs
+                tot  := tt
+                nm   := nn
+            else
+                mQ.set(idx, time)
+                if bs > mB.get(idx) or (bs == mB.get(idx) and tt >= mT.get(idx))
+                    mB.set(idx, bs)
+                    mT.set(idx, tt)
+                    mN.set(idx, nn)
+                best := mB.get(idx)
+                tot  := mT.get(idx)
+                nm   := mN.get(idx)
+        else if idx >= 0 and not na(dayStart) and mQ.get(idx) >= dayStart
+            // the liquidity in front was swept TODAY on the way to the POI: that is the
+            // setup, so the POI stays with its remembered entry type. A POI that has had
+            // no liquidity in front of it today is not shown.
+            ok   := true
+            best := mB.get(idx)
+            tot  := mT.get(idx)
+            nm   := mN.get(idx)
+        // liquidity rule off: show it anyway (entry type from the remembered build-up,
+        // if it ever had liquidity in front)
+        if not ok and not reqLiq
+            ok := true
+            if idx >= 0
+                best := mB.get(idx)
+                tot  := mT.get(idx)
+                nm   := mN.get(idx)
+    [ok, best, tot, nm]
+
+// Mitigated candidate: shown when it was touched today and had liquidity in front of it
+// before the touch (its remembered entry type is used).
+f_mt(float y, int x, int te, int dayStart, array<float> mY, array<int> mX, array<int> mB, array<int> mT, array<string> mN) =>
+    bool ok = false
+    int best = 0
+    int tot = 0
+    string nm = ""
+    if not na(y) and not na(x) and not na(te) and not na(dayStart) and te >= dayStart
+        if mY.size() > 0
+            for i = 0 to mY.size() - 1
+                if mY.get(i) == y and mX.get(i) == x
+                    ok   := true
+                    best := mB.get(i)
+                    tot  := mT.get(i)
+                    nm   := mN.get(i)
+        // liquidity rule off: a POI touched today is shown even without a build-up
+        if not reqLiq
+            ok := true
+    [ok, best, tot, nm]
+
+f_selU(int dir, float y1, int x1, int k1, float y2, int x2, int k2, float y3, int x3, int k3, array<float> lp, array<string> ln, array<bool> lh, float cd, float maxD, array<float> mY, array<int> mX, array<int> mB, array<int> mT, array<string> mN, array<int> mQ, int dayStart) =>
+    [o1, b1, t1, n1] = f_u(dir, y1, x1, lp, ln, lh, cd, maxD, mY, mX, mB, mT, mN, mQ, dayStart)
+    [o2, b2, t2, n2] = f_u(dir, y2, x2, lp, ln, lh, cd, maxD, mY, mX, mB, mT, mN, mQ, dayStart)
+    [o3, b3, t3, n3] = f_u(dir, y3, x3, lp, ln, lh, cd, maxD, mY, mX, mB, mT, mN, mQ, dayStart)
+    float ry = na
+    int   rx = na
+    int   rk = 0
+    int   rb = 0
+    int   rt = 0
+    string rn = ""
+    if o1
+        ry := y1
+        rx := x1
+        rk := k1
+        rb := b1
+        rt := t1
+        rn := n1
+    else if o2
+        ry := y2
+        rx := x2
+        rk := k2
+        rb := b2
+        rt := t2
+        rn := n2
+    else if o3
+        ry := y3
+        rx := x3
+        rk := k3
+        rb := b3
+        rt := t3
+        rn := n3
+    [ry, rx, rk, rb, rt, rn]
+
+f_selM(float y1, int x1, int k1, int e1, float y2, int x2, int k2, int e2, int dayStart, array<float> mY, array<int> mX, array<int> mB, array<int> mT, array<string> mN) =>
+    int re = na
+    [o1, b1, t1, n1] = f_mt(y1, x1, e1, dayStart, mY, mX, mB, mT, mN)
+    [o2, b2, t2, n2] = f_mt(y2, x2, e2, dayStart, mY, mX, mB, mT, mN)
+    float ry = na
+    int   rx = na
+    int   rk = 0
+    int   rb = 0
+    int   rt = 0
+    string rn = ""
+    if o1
+        ry := y1
+        rx := x1
+        rk := k1
+        rb := b1
+        rt := t1
+        rn := n1
+        re := e1
+    else if o2
+        ry := y2
+        rx := x2
+        rk := k2
+        rb := b2
+        rt := t2
+        rn := n2
+        re := e2
+    [ry, rx, rk, rb, rt, rn, re]
+
+// Running low / high of the CURRENT (still open) candle of a higher timeframe, built from
+// the 15m candles. The POI list comes from that timeframe's last CLOSED candle, so a
+// touch inside the open candle would otherwise only count after it closes.
+f_run(string tf) =>
+    bool nb = ta.change(time(tf)) != 0
+    var float rl = na
+    var float rh = na
+    if nb or na(rl)
+        rl := low
+        rh := high
+    else
+        rl := math.min(rl, low)
+        rh := math.max(rh, high)
+    [rl, rh, time(tf)]
+
+// Untouched candidates already touched inside the open higher-timeframe candle: they are
+// mitigated now. Returns the nearest one (drawn as mitigated) and which ones to drop
+// from the untouched list.
+f_live(int dir, float y1, int x1, int k1, float y2, int x2, int k2, float y3, int x3, int k3, float rl, float rh, int ht, array<float> mY, array<int> mX, array<int> mB, array<int> mT, array<string> mN) =>
+    bool z1 = not na(y1) and (dir == 1 ? rl <= y1 + sprTol : rh >= y1 - sprTol)
+    bool z2 = not na(y2) and (dir == 1 ? rl <= y2 + sprTol : rh >= y2 - sprTol)
+    bool z3 = not na(y3) and (dir == 1 ? rl <= y3 + sprTol : rh >= y3 - sprTol)
+    float ly = z1 ? y1 : z2 ? y2 : z3 ? y3 : na
+    int   lx = z1 ? x1 : z2 ? x2 : z3 ? x3 : na
+    int   lk = z1 ? k1 : z2 ? k2 : z3 ? k3 : 0
+    int   lb = 0
+    int   lt = 0
+    string lnm = ""
+    bool  mem = false
+    if not na(ly) and mY.size() > 0
+        for i = 0 to mY.size() - 1
+            if mY.get(i) == ly and mX.get(i) == lx
+                mem := true
+                lb  := mB.get(i)
+                lt  := mT.get(i)
+                lnm := mN.get(i)
+    if not na(ly) and reqLiq and not mem
+        ly := na
+    [z1, z2, z3, ly, lx, lk, lb, lt, lnm, ht]
+
+// far edge (y2) of a picked POI: matched by level and candle time among the candidates
+f_z(float y, int x, float y1, int x1, float z1, float y2, int x2, float z2, float y3, int x3, float z3, float y4, int x4, float z4, float y5, int x5, float z5) =>
+    float z = y
+    if not na(y)
+        if y == y1 and x == x1
+            z := z1
+        else if y == y2 and x == x2
+            z := z2
+        else if y == y3 and x == x3
+            z := z3
+        else if y == y4 and x == x4
+            z := z4
+        else if y == y5 and x == x5
+            z := z5
+    nz(z, y)
+
+f_engine() =>
+    // liquidity on 15m candles
+    [eaH, eaL, einA, eaT] = f_rng(sAsia)
+    [efH, efL, einF, efT] = f_rng(sLiq1)
+    [enH, enL, einN, enT] = f_rng(sLiq2)
+    [ekH, ekL, einK, ekT] = f_rng(sLdnKZ)
+    [elH, elL, einL, elT] = f_rng(sLdnS)
+    [epdH, epdL] = request.security(syminfo.tickerid, "D", [high[1], low[1]], lookahead = barmerge.lookahead_on)
+    [epwH, epwL] = request.security(syminfo.tickerid, "W", [high[1], low[1]], lookahead = barmerge.lookahead_on)
+    [eeqH, eeqL] = f_eq(eqTol)
+    float eatr = request.security(syminfo.tickerid, "60", ta.atr(14)[1], lookahead = barmerge.lookahead_on)
+    float cd = clMult * nz(eatr, ta.atr(14))
+    float edATR = request.security(syminfo.tickerid, "D", ta.atr(14)[1], lookahead = barmerge.lookahead_on)
+    float maxD = reachMult * edATR
+    bool t01 = f_tk(eaH, true)
+    bool t02 = f_tk(eaL, false)
+    bool t03 = f_tk(efH, true)
+    bool t04 = f_tk(efL, false)
+    bool t05 = f_tk(enH, true)
+    bool t06 = f_tk(enL, false)
+    bool t07 = f_tk(ekH, true)
+    bool t08 = f_tk(ekL, false)
+    bool t09 = f_tk(elH, true)
+    bool t10 = f_tk(elL, false)
+    bool t11 = f_tk(epdH, true)
+    bool t12 = f_tk(epdL, false)
+    bool t13 = f_tk(epwH, true)
+    bool t14 = f_tk(epwL, false)
+    bool t15 = f_tk(eeqH, true)
+    bool t16 = f_tk(eeqL, false)
+    array<float>  lp = array.new<float>()
+    array<string> ln = array.new<string>()
+    array<bool>   lh = array.new<bool>()
+    f_lvl(lp, ln, lh, eaH,  "Asia H",      true,  uAsia and not einA and not t01)
+    f_lvl(lp, ln, lh, eaL,  "Asia L",      false, uAsia and not einA and not t02)
+    f_lvl(lp, ln, lh, efH,  "Frankfurt H", true,  uFft and not einF and not t03)
+    f_lvl(lp, ln, lh, efL,  "Frankfurt L", false, uFft and not einF and not t04)
+    f_lvl(lp, ln, lh, enH,  "NY liq H",    true,  uNyc and not einN and not t05)
+    f_lvl(lp, ln, lh, enL,  "NY liq L",    false, uNyc and not einN and not t06)
+    f_lvl(lp, ln, lh, ekH,  "KZ H",        true,  uKz and not einK and not t07)
+    f_lvl(lp, ln, lh, ekL,  "KZ L",        false, uKz and not einK and not t08)
+    f_lvl(lp, ln, lh, elH,  "London H",    true,  uLdn and not einL and not t09)
+    f_lvl(lp, ln, lh, elL,  "London L",    false, uLdn and not einL and not t10)
+    f_lvl(lp, ln, lh, epdH, "PDH",         true,  uPd and not t11)
+    f_lvl(lp, ln, lh, epdL, "PDL",         false, uPd and not t12)
+    f_lvl(lp, ln, lh, epwH, "PWH",         true,  uPw and not t13)
+    f_lvl(lp, ln, lh, epwL, "PWL",         false, uPw and not t14)
+    f_lvl(lp, ln, lh, eeqH, "EQH",         true,  uEq and not t15)
+    f_lvl(lp, ln, lh, eeqL, "EQL",         false, uEq and not t16)
+    // POI: 1H OB, RB, BB · 4H and Daily + continuation RB and IFVG
+    [abU1y, abU1t, abU1k, abU2y, abU2t, abU2k, abU3y, abU3t, abU3k, abM1y, abM1t, abM1k, abM1e, abM2y, abM2t, abM2k, abM2e, asU1y, asU1t, asU1k, asU2y, asU2t, asU2k, asU3y, asU3t, asU3k, asM1y, asM1t, asM1k, asM1e, asM2y, asM2t, asM2k, asM2e, abZ1, abZ2, abZ3, abZm1, abZm2, asZ1, asZ2, asZ3, asZm1, asZm2] = request.security(syminfo.tickerid, "60", f_poi(obLook, poiOB, poiBB, poiRB, false, false, 0.0))
+    [bbU1y, bbU1t, bbU1k, bbU2y, bbU2t, bbU2k, bbU3y, bbU3t, bbU3k, bbM1y, bbM1t, bbM1k, bbM1e, bbM2y, bbM2t, bbM2k, bbM2e, bsU1y, bsU1t, bsU1k, bsU2y, bsU2t, bsU2k, bsU3y, bsU3t, bsU3k, bsM1y, bsM1t, bsM1k, bsM1e, bsM2y, bsM2t, bsM2k, bsM2e, bbZ1, bbZ2, bbZ3, bbZm1, bbZm2, bsZ1, bsZ2, bsZ3, bsZm1, bsZm2] = request.security(syminfo.tickerid, "240", f_poi(obLook, poiOB, poiBB, poiRB, poiCRB, poiIFVG, 0.0))
+    [cbU1y, cbU1t, cbU1k, cbU2y, cbU2t, cbU2k, cbU3y, cbU3t, cbU3k, cbM1y, cbM1t, cbM1k, cbM1e, cbM2y, cbM2t, cbM2k, cbM2e, csU1y, csU1t, csU1k, csU2y, csU2t, csU2k, csU3y, csU3t, csU3k, csM1y, csM1t, csM1k, csM1e, csM2y, csM2t, csM2k, csM2e, cbZ1, cbZ2, cbZ3, cbZm1, cbZm2, csZ1, csZ2, csZ3, csZm1, csZm2] = request.security(syminfo.tickerid, "D", f_poi(obLook, poiOB, poiBB, poiRB, poiCRB, poiIFVG, 0.0))
+    // remembered entry type per POI, one memory per timeframe
+    var array<float>  m1Y = array.new<float>()
+    var array<int>    m1X = array.new<int>()
+    var array<int>    m1B = array.new<int>()
+    var array<int>    m1T = array.new<int>()
+    var array<string> m1N = array.new<string>()
+    var array<int>    m1Q = array.new<int>()
+    var array<float>  m4Y = array.new<float>()
+    var array<int>    m4X = array.new<int>()
+    var array<int>    m4B = array.new<int>()
+    var array<int>    m4T = array.new<int>()
+    var array<string> m4N = array.new<string>()
+    var array<int>    m4Q = array.new<int>()
+    var array<float>  mdY = array.new<float>()
+    var array<int>    mdX = array.new<int>()
+    var array<int>    mdB = array.new<int>()
+    var array<int>    mdT = array.new<int>()
+    var array<string> mdN = array.new<string>()
+    var array<int>    mdQ = array.new<int>()
+    bool sl = tradeB == -1
+    int  dr = sl ? -1 : 1
+    bool on = tradeB != 0
+    // touches inside the open 1H / 4H / Daily candle count as mitigation straight away
+    [rl1, rh1, ht1] = f_run("60")
+    [rl4, rh4, ht4] = f_run("240")
+    [rld, rhd, htd] = f_run("D")
+    float c1y1 = on ? (sl ? asU1y : abU1y) : na
+    float c1y2 = on ? (sl ? asU2y : abU2y) : na
+    float c1y3 = on ? (sl ? asU3y : abU3y) : na
+    [z11, z12, z13, l1y, l1x, l1k, l1b, l1t, l1n, l1e] = f_live(dr, c1y1, sl ? asU1t : abU1t, sl ? asU1k : abU1k, c1y2, sl ? asU2t : abU2t, sl ? asU2k : abU2k, c1y3, sl ? asU3t : abU3t, sl ? asU3k : abU3k, rl1, rh1, ht1, m1Y, m1X, m1B, m1T, m1N)
+    [u1y, u1x, u1k, u1b, u1t, u1n] = f_selU(dr, z11 ? na : c1y1, sl ? asU1t : abU1t, sl ? asU1k : abU1k, z12 ? na : c1y2, sl ? asU2t : abU2t, sl ? asU2k : abU2k, z13 ? na : c1y3, sl ? asU3t : abU3t, sl ? asU3k : abU3k, lp, ln, lh, cd, maxD, m1Y, m1X, m1B, m1T, m1N, m1Q, eaT)
+    [h1y, h1x, h1k, h1b, h1t, h1n, h1e] = f_selM(on ? (sl ? asM1y : abM1y) : na, sl ? asM1t : abM1t, sl ? asM1k : abM1k, sl ? asM1e : abM1e, on ? (sl ? asM2y : abM2y) : na, sl ? asM2t : abM2t, sl ? asM2k : abM2k, sl ? asM2e : abM2e, eaT, m1Y, m1X, m1B, m1T, m1N)
+    // the touch in the open candle is the newest mitigation, so it is the one drawn
+    bool  w1 = not na(l1y)
+    float g1y = w1 ? l1y : h1y
+    int   g1x = w1 ? l1x : h1x
+    int   g1k = w1 ? l1k : h1k
+    int   g1b = w1 ? l1b : h1b
+    int   g1t = w1 ? l1t : h1t
+    string g1n = w1 ? l1n : h1n
+    int   g1e = w1 ? l1e : h1e
+    float c4y1 = on ? (sl ? bsU1y : bbU1y) : na
+    float c4y2 = on ? (sl ? bsU2y : bbU2y) : na
+    float c4y3 = on ? (sl ? bsU3y : bbU3y) : na
+    [z41, z42, z43, l4y, l4x, l4k, l4b, l4t, l4n, l4e] = f_live(dr, c4y1, sl ? bsU1t : bbU1t, sl ? bsU1k : bbU1k, c4y2, sl ? bsU2t : bbU2t, sl ? bsU2k : bbU2k, c4y3, sl ? bsU3t : bbU3t, sl ? bsU3k : bbU3k, rl4, rh4, ht4, m4Y, m4X, m4B, m4T, m4N)
+    [u4y, u4x, u4k, u4b, u4t, u4n] = f_selU(dr, z41 ? na : c4y1, sl ? bsU1t : bbU1t, sl ? bsU1k : bbU1k, z42 ? na : c4y2, sl ? bsU2t : bbU2t, sl ? bsU2k : bbU2k, z43 ? na : c4y3, sl ? bsU3t : bbU3t, sl ? bsU3k : bbU3k, lp, ln, lh, cd, maxD, m4Y, m4X, m4B, m4T, m4N, m4Q, eaT)
+    [h4y, h4x, h4k, h4b, h4t, h4n, h4e] = f_selM(on ? (sl ? bsM1y : bbM1y) : na, sl ? bsM1t : bbM1t, sl ? bsM1k : bbM1k, sl ? bsM1e : bbM1e, on ? (sl ? bsM2y : bbM2y) : na, sl ? bsM2t : bbM2t, sl ? bsM2k : bbM2k, sl ? bsM2e : bbM2e, eaT, m4Y, m4X, m4B, m4T, m4N)
+    // the touch in the open candle is the newest mitigation, so it is the one drawn
+    bool  w4 = not na(l4y)
+    float g4y = w4 ? l4y : h4y
+    int   g4x = w4 ? l4x : h4x
+    int   g4k = w4 ? l4k : h4k
+    int   g4b = w4 ? l4b : h4b
+    int   g4t = w4 ? l4t : h4t
+    string g4n = w4 ? l4n : h4n
+    int   g4e = w4 ? l4e : h4e
+    float cdy1 = on ? (sl ? csU1y : cbU1y) : na
+    float cdy2 = on ? (sl ? csU2y : cbU2y) : na
+    float cdy3 = on ? (sl ? csU3y : cbU3y) : na
+    [zd1, zd2, zd3, ldy, ldx, ldk, ldb, ldt, ldn, lde] = f_live(dr, cdy1, sl ? csU1t : cbU1t, sl ? csU1k : cbU1k, cdy2, sl ? csU2t : cbU2t, sl ? csU2k : cbU2k, cdy3, sl ? csU3t : cbU3t, sl ? csU3k : cbU3k, rld, rhd, htd, mdY, mdX, mdB, mdT, mdN)
+    [udy, udx, udk, udb, udt, udn] = f_selU(dr, zd1 ? na : cdy1, sl ? csU1t : cbU1t, sl ? csU1k : cbU1k, zd2 ? na : cdy2, sl ? csU2t : cbU2t, sl ? csU2k : cbU2k, zd3 ? na : cdy3, sl ? csU3t : cbU3t, sl ? csU3k : cbU3k, lp, ln, lh, cd, maxD, mdY, mdX, mdB, mdT, mdN, mdQ, eaT)
+    [hdy, hdx, hdk, hdb, hdt, hdn, hde] = f_selM(on ? (sl ? csM1y : cbM1y) : na, sl ? csM1t : cbM1t, sl ? csM1k : cbM1k, sl ? csM1e : cbM1e, on ? (sl ? csM2y : cbM2y) : na, sl ? csM2t : cbM2t, sl ? csM2k : cbM2k, sl ? csM2e : cbM2e, eaT, mdY, mdX, mdB, mdT, mdN)
+    // the touch in the open candle is the newest mitigation, so it is the one drawn
+    bool  wd = not na(ldy)
+    float gdy = wd ? ldy : hdy
+    int   gdx = wd ? ldx : hdx
+    int   gdk = wd ? ldk : hdk
+    int   gdb = wd ? ldb : hdb
+    int   gdt = wd ? ldt : hdt
+    string gdn = wd ? ldn : hdn
+    int   gde = wd ? lde : hde
+    // far edges of the drawn POI
+    float u1z = sl ? f_z(u1y, u1x, asU1y, asU1t, asZ1, asU2y, asU2t, asZ2, asU3y, asU3t, asZ3, asM1y, asM1t, asZm1, asM2y, asM2t, asZm2) : f_z(u1y, u1x, abU1y, abU1t, abZ1, abU2y, abU2t, abZ2, abU3y, abU3t, abZ3, abM1y, abM1t, abZm1, abM2y, abM2t, abZm2)
+    float g1z = sl ? f_z(g1y, g1x, asU1y, asU1t, asZ1, asU2y, asU2t, asZ2, asU3y, asU3t, asZ3, asM1y, asM1t, asZm1, asM2y, asM2t, asZm2) : f_z(g1y, g1x, abU1y, abU1t, abZ1, abU2y, abU2t, abZ2, abU3y, abU3t, abZ3, abM1y, abM1t, abZm1, abM2y, abM2t, abZm2)
+    float u4z = sl ? f_z(u4y, u4x, bsU1y, bsU1t, bsZ1, bsU2y, bsU2t, bsZ2, bsU3y, bsU3t, bsZ3, bsM1y, bsM1t, bsZm1, bsM2y, bsM2t, bsZm2) : f_z(u4y, u4x, bbU1y, bbU1t, bbZ1, bbU2y, bbU2t, bbZ2, bbU3y, bbU3t, bbZ3, bbM1y, bbM1t, bbZm1, bbM2y, bbM2t, bbZm2)
+    float g4z = sl ? f_z(g4y, g4x, bsU1y, bsU1t, bsZ1, bsU2y, bsU2t, bsZ2, bsU3y, bsU3t, bsZ3, bsM1y, bsM1t, bsZm1, bsM2y, bsM2t, bsZm2) : f_z(g4y, g4x, bbU1y, bbU1t, bbZ1, bbU2y, bbU2t, bbZ2, bbU3y, bbU3t, bbZ3, bbM1y, bbM1t, bbZm1, bbM2y, bbM2t, bbZm2)
+    float udz = sl ? f_z(udy, udx, csU1y, csU1t, csZ1, csU2y, csU2t, csZ2, csU3y, csU3t, csZ3, csM1y, csM1t, csZm1, csM2y, csM2t, csZm2) : f_z(udy, udx, cbU1y, cbU1t, cbZ1, cbU2y, cbU2t, cbZ2, cbU3y, cbU3t, cbZ3, cbM1y, cbM1t, cbZm1, cbM2y, cbM2t, cbZm2)
+    float gdz = sl ? f_z(gdy, gdx, csU1y, csU1t, csZ1, csU2y, csU2t, csZ2, csU3y, csU3t, csZ3, csM1y, csM1t, csZm1, csM2y, csM2t, csZm2) : f_z(gdy, gdx, cbU1y, cbU1t, cbZ1, cbU2y, cbU2t, cbZ2, cbU3y, cbU3t, cbZ3, cbM1y, cbM1t, cbZm1, cbM2y, cbM2t, cbZm2)
+    [u1y, u1x, u1k, u1b, u1t, u1n, g1y, g1x, g1k, g1b, g1t, g1n, g1e, u4y, u4x, u4k, u4b, u4t, u4n, g4y, g4x, g4k, g4b, g4t, g4n, g4e, udy, udx, udk, udb, udt, udn, gdy, gdx, gdk, gdb, gdt, gdn, gde, u1z, g1z, u4z, g4z, udz, gdz]
+
+[r1uY, r1uX, r1uK, r1uB, r1uT, r1uN, r1mY, r1mX, r1mK, r1mB, r1mT, r1mN, r1mE, r4uY, r4uX, r4uK, r4uB, r4uT, r4uN, r4mY, r4mX, r4mK, r4mB, r4mT, r4mN, r4mE, rduY, rduX, rduK, rduB, rduT, rduN, rdmY, rdmX, rdmK, rdmB, rdmT, rdmN, rdmE, r1uZ, r1mZ, r4uZ, r4mZ, rduZ, rdmZ] = request.security(syminfo.tickerid, "15", f_engine())
+bool pOn = tradeB != 0
+int pDir = tradeB == -1 ? -1 : 1
+
+// =====================================================================================
+//  CX : outils communs
+// =====================================================================================
+float atr14  = ta.atr(14)
+float atr21  = ta.atr(21)
+float maxDch = reachMult * nz(dATR, atr14 * 20)
+// temps de trading : Londres ou New York (ISLB), NY PM si activée
+bool  inNpW  = nyPmOn and inS(sNyPM)
+bool  inTrdX = inTrd or (nyPmTrd and inNpW)
+float slBufV = math.max(spreadIn > 0 ? spreadIn : sprTol, slBufAtr * nz(atr14))
+string tfStr = timeframe.isminutes ? (timeframe.multiplier >= 60 ? "H" + str.tostring(timeframe.multiplier / 60) : "M" + str.tostring(timeframe.multiplier)) : timeframe.period
+bool  cxOn   = canShow
+var array<string> alQ = array.new<string>()
+alQ.clear()
+
+f_px(float p) =>
+    str.tostring(p, format.mintick)
+
+f_ttName() =>
+    inS(sLdnTT) ? "Londres" : inS(sNyTT) ? "New York" : (nyPmTrd and inNpW) ? "NY PM" : "hors fenêtre"
+
+f_tfName(string tf) =>
+    tf == "15" ? "M15" : tf == "60" ? "H1" : tf == "240" ? "H4" : tf == "D" or tf == "1D" ? "D1" : tf == "W" or tf == "1W" ? "W1" : tf == "M" or tf == "1M" ? "MN" : tf
+
+// =====================================================================================
+//  ZONES DE SWEEP (LuxAlgo Session Sweeps, f_pSWP) sur chaque niveau balayé
+// =====================================================================================
+// La zone naît quand une mèche traverse un niveau vivant (ouverture de l'autre côté).
+// Elle s'étend tant que le prix reste dans la marge ; une clôture au-delà de 1.5 × la
+// marge, ou une mèche au-delà de la marge à la fin, en fait un faux sweep (gris).
+var array<box> swBoxes = array.new<box>()
+f_swz(float lvl, bool isH, bool ev) =>
+    var box   bx  = na
+    var bool  act = false
+    var float pS  = na
+    var int   rB  = na
+    float mg = swpM * nz(atr21)
+    if ev and not na(lvl) and (isH ? open < lvl : open > lvl)
+        pS  := lvl
+        rB  := bar_index + 1
+        act := true
+        bx  := na
+        if swpShow and cxOn
+            bx := isH ? box.new(bar_index - 1, math.min(lvl + mg, high), bar_index + 1, lvl, bgcolor = swpBC, border_color = color(na)) : box.new(bar_index - 1, lvl, bar_index + 1, math.max(lvl - mg, low), bgcolor = swpSC, border_color = color(na))
+            swBoxes.push(bx)
+            if swBoxes.size() > 60
+                box.delete(swBoxes.shift())
+    else if act
+        if isH
+            if low > pS - mg and high < pS + mg
+                if high > pS
+                    rB := bar_index + 1
+                if not na(bx)
+                    bx.set_top(math.max(high, bx.get_top()))
+                    bx.set_right(rB)
+            else
+                int rgt = rB
+                if close > pS + mg * 1.5
+                    if not na(bx)
+                        bx.set_bgcolor(swpHF ? color(na) : swpFC)
+                        bx.set_right(bar_index)
+                    act := false
+                else if bar_index - rgt >= swpML
+                    if high > pS + mg and not na(bx)
+                        bx.set_bgcolor(swpHF ? color(na) : swpFC)
+                        bx.set_right(bar_index + 1)
+                    act := false
+        else
+            if low > pS - mg and high < pS + mg
+                if low < pS
+                    rB := bar_index + 1
+                if not na(bx)
+                    bx.set_bottom(math.min(low, bx.get_bottom()))
+                    bx.set_right(rB)
+            else
+                int rgt = rB
+                if close < pS - mg * 1.5
+                    if not na(bx)
+                        bx.set_bgcolor(swpHF ? color(na) : swpFC)
+                        bx.set_right(bar_index + 1)
+                    act := false
+                else if bar_index - rgt >= swpML
+                    if low < pS - mg and not na(bx)
+                        bx.set_bgcolor(swpHF ? color(na) : swpFC)
+                        bx.set_right(bar_index + 1)
+                    act := false
+    act
+
+f_swz(L_aHi,  true,  uAsia and not L_inAsia and nwAH)
+f_swz(L_aLo,  false, uAsia and not L_inAsia and nwAL)
+f_swz(L_fftH, true,  uFft and not L_inFft and nwFH)
+f_swz(L_fftL, false, uFft and not L_inFft and nwFL)
+f_swz(L_nycH, true,  uNyc and not L_inNyc and nwNH)
+f_swz(L_nycL, false, uNyc and not L_inNyc and nwNL)
+f_swz(L_kzH,  true,  uKz and not L_inKz and nwKH)
+f_swz(L_kzL,  false, uKz and not L_inKz and nwKL)
+f_swz(L_ldnH, true,  uLdn and not L_inLdn and nwLH)
+f_swz(L_ldnL, false, uLdn and not L_inLdn and nwLL)
+f_swz(pdH,    true,  uPd and nwPDH)
+f_swz(pdL,    false, uPd and nwPDL)
+f_swz(pwH,    true,  uPw and nwPWH)
+f_swz(pwL,    false, uPw and nwPWL)
+f_swz(eqH,    true,  uEq and nwEH)
+f_swz(eqL,    false, uEq and nwEL)
+f_swz(pmH,    true,  uPm and nwPMH)
+f_swz(pmL,    false, uPm and nwPML)
+f_swz(npH,    true,  uNp and nyPmOn and not inNp and nwNPH)
+f_swz(npL,    false, uNp and nyPmOn and not inNp and nwNPL)
+
+// =====================================================================================
+//  PREMIUM / DISCOUNT : dernier plus haut et dernier plus bas de swing confirmés
+// =====================================================================================
+f_pdr() =>
+    float ph = ta.pivothigh(high, pdLen, pdLen)
+    float pl = ta.pivotlow(low, pdLen, pdLen)
+    var float sh  = na
+    var int   shT = na
+    var float sl  = na
+    var int   slT = na
+    if not na(ph)
+        sh  := ph
+        shT := time[pdLen]
+    if not na(pl)
+        sl  := pl
+        slT := time[pdLen]
+    [sh, shT, sl, slT]
+// unité supérieure : bougies clôturées seulement ([1] + lookahead, sans repeinture)
+f_pdrC() =>
+    [a, b, c, d] = f_pdr()
+    [a[1], b[1], c[1], d[1]]
+bool pdChart = pdTfIn == "" or pdTfIn == timeframe.period
+[rpH, rpHT, rpL, rpLT] = request.security(syminfo.tickerid, pdTfIn, f_pdrC(), lookahead = barmerge.lookahead_on)
+[cpH, cpHT, cpL, cpLT] = f_pdr()
+float pdHi  = pdChart ? cpH : rpH
+int   pdHiT = pdChart ? cpHT : rpHT
+float pdLo  = pdChart ? cpL : rpL
+int   pdLoT = pdChart ? cpLT : rpLT
+bool  pdOk  = not na(pdHi) and not na(pdLo) and pdHi > pdLo
+float pdEq  = pdOk ? (pdHi + pdLo) / 2 : na
+
+// +1 premium, -1 discount, 0 équilibre (50 % ± la bande)
+f_pdZone(float p) =>
+    int z = 0
+    if pdOk and not na(p)
+        float pos = (p - pdLo) / (pdHi - pdLo)
+        z := pos > 0.5 + pdEqBand / 100 ? 1 : pos < 0.5 - pdEqBand / 100 ? -1 : 0
+    z
+int pdZ = f_pdZone(close)
+
+// =====================================================================================
+//  ICT HTF FVGs (fadi) · même logique, une requête par unité (tuple)
+// =====================================================================================
+// Suivi d'une zone (FVG ou POI) pour les setups : contacts, extrême du contact, invalidation.
+type Zt
+    float  key
+    float  lo
+    float  hi
+    int    dir
+    string nm
+    string et     = ""
+    int    born
+    int    seen
+    int    touches = 0
+    bool   inPrev  = false
+    int    cBar
+    float  ext
+    int    extBar
+    bool   dead    = false
+    bool   done1   = false
+    bool   done3   = false
+
+type Imbalance_Settings
+    bool    show
+    string  htf
+    color   color_bull
+    color   color_bear
+    int     max_count
+
+type Imbalance
+    int     open_time
+    int     close_time
+    float   open
+    float   middle
+    float   close
+    bool    mitigated = false
+    int     mitigated_time
+    line    line_middle
+    label   lbl
+    box     box
+    Zt      z
+
+type ImbalanceStructure
+    array<Imbalance>   imbalance
+    Imbalance_Settings settings
+
+color color_transparent = #ffffff00
+
+f_ceStyle(string style) =>
+    style == "----" ? line.style_dashed : style == "····" ? line.style_dotted : line.style_solid
+
+f_htfText(string htf) =>
+    string formatted = htf
+    int seconds = timeframe.in_seconds(htf)
+    if seconds < 60
+        formatted := str.tostring(seconds) + "s"
+    else if (seconds / 60) < 60
+        formatted := str.tostring(int(seconds / 60)) + "m"
+    else if (seconds / 60 / 60) < 24
+        formatted := str.tostring(int(seconds / 60 / 60)) + "H"
+    formatted
+
+f_validTf(string tf) =>
+    timeframe.in_seconds() < timeframe.in_seconds(tf)
+
+// AddZone : boîte, étiquette et C.E. de l'imbalance
+method AddZone(ImbalanceStructure IS, Imbalance imb, int step) =>
+    bool visible = true
+    if IS.settings.show
+        int buffer = time + ((time - time[1]) * (fvgPad + 1 + (fvgBuf * (step - 1))))
+        if na(imb.box)
+            imb.box := box.new(imb.open_time, imb.open, buffer, imb.close, Border_show ? imb.open < imb.close ? color.new(IS.settings.color_bull, color.t(IS.settings.color_bull) / 3) : color.new(IS.settings.color_bear, color.t(IS.settings.color_bear) / 3) : color_transparent, Border_show ? 1 : 0, bgcolor = imb.open < imb.close ? IS.settings.color_bull : IS.settings.color_bear, xloc = xloc.bar_time)
+            if fl_show
+                imb.lbl := label.new(buffer, imb.middle, text = f_htfText(IS.settings.htf), xloc = xloc.bar_time, textcolor = fl_color, style = label.style_label_left, color = color_transparent, size = fl_size)
+            if CE_show
+                imb.line_middle := line.new(imb.open_time, imb.middle, buffer, imb.middle, xloc = xloc.bar_time, style = f_ceStyle(CE_style), color = CE_color)
+        else
+            box.set_right(imb.box, imb.mitigated ? imb.mitigated_time : buffer)
+            box.set_bgcolor(imb.box, imb.open < imb.close ? imb.mitigated ? mit_bull : IS.settings.color_bull : imb.mitigated ? mit_bear : IS.settings.color_bear)
+            box.set_border_color(imb.box, Border_show ? imb.open < imb.close ? color.new(mit_bull, color.t(mit_bull) / 3) : color.new(mit_bear, color.t(mit_bear) / 3) : color_transparent)
+            label.set_x(imb.lbl, imb.mitigated ? imb.mitigated_time : buffer)
+            if CE_show
+                line.set_x2(imb.line_middle, imb.mitigated ? imb.mitigated_time : buffer)
+        if imb.mitigated and not mit_show
+            if not na(imb.box)
+                box.delete(imb.box)
+                line.delete(imb.line_middle)
+                label.delete(imb.lbl)
+                visible := false
+    visible
+
+f_imbDel(Imbalance imb) =>
+    if not na(imb.box)
+        box.delete(imb.box)
+        line.delete(imb.line_middle)
+        label.delete(imb.lbl)
+        imb.box := na
+        imb.line_middle := na
+        imb.lbl := na
+    true
+
+// AddImbalance : nouvelle imbalance, avec son suivi de zone pour les setups
+method AddImbalance(ImbalanceStructure IS, float o, float c, int o_time) =>
+    Imbalance imb = Imbalance.new()
+    imb.open_time := o_time
+    imb.open      := o
+    imb.middle    := (o + c) / 2
+    imb.close     := c
+    imb.z         := Zt.new(float(o_time), math.min(o, c), math.max(o, c), o < c ? 1 : -1, "FVG " + f_tfName(IS.settings.htf), "", bar_index, bar_index)
+    IS.imbalance.unshift(imb)
+    if IS.imbalance.size() > 100
+        Imbalance temp = IS.imbalance.pop()
+        f_imbDel(temp)
+    IS
+
+// CheckMitigated : comblée selon le réglage (sur les bougies du graphique)
+method CheckMitigated(ImbalanceStructure IS, float o, float h, float l, float c) =>
+    if IS.imbalance.size() > 0
+        for i = IS.imbalance.size() - 1 to 0
+            Imbalance imb = IS.imbalance.get(i)
+            if not imb.mitigated
+                switch mit_type
+                    "None" =>
+                        imb.mitigated := false
+                    "Wick filled" =>
+                        imb.mitigated := imb.open <= imb.close ? low <= imb.open : high >= imb.open
+                    "Body filled" =>
+                        imb.mitigated := imb.open < imb.close ? math.min(o, c) <= imb.open : math.max(o, c) >= imb.open
+                    "Wick filled half" =>
+                        imb.mitigated := imb.open <= imb.close ? low <= imb.middle : high >= imb.middle
+                    "Body filled half" =>
+                        imb.mitigated := imb.open <= imb.close ? math.min(o, c) <= imb.middle : math.max(o, c) >= imb.middle
+                if imb.mitigated
+                    if not mit_show
+                        f_imbDel(imb)
+                        IS.imbalance.remove(i)
+                    else
+                        imb.mitigated_time := time
+    IS
+
+// AdjustMargins : au plus max_count boîtes par unité, à moins d'une ATR Daily du prix
+method AdjustMargins(ImbalanceStructure IS, int step) =>
+    int count = 0
+    if IS.imbalance.size() > 0
+        float rl = timeframe.isintraday ? close - nz(dATR) : 0
+        float rh = timeframe.isintraday ? close + nz(dATR) : 0
+        for i = 0 to IS.imbalance.size() - 1
+            Imbalance imb = IS.imbalance.get(i)
+            if fvgDraw and cxOn and (math.max(imb.open, imb.close) > rl) and (math.min(imb.open, imb.close) < rh) and count < IS.settings.max_count
+                if IS.AddZone(imb, step)
+                    count := count + 1
+            else
+                f_imbDel(imb)
+    IS
+
+// FindImbalance : nouvelle imbalance entre les bougies 1 et 3 (clôturées) de l'unité
+method FindImbalance(ImbalanceStructure IS, float o, float h, float l, float c, int t, float o1, float h1, float l1, float c1, int t1, float o2, float h2, float l2, float c2, int t2) =>
+    if IS.settings.show and (h < l2 or l > h2)
+        float oo = h < l2 ? l2 : h2
+        float cc = h < l2 ? h : l
+        if IS.imbalance.size() == 0
+            IS.AddImbalance(oo, cc, t2)
+        else
+            if IS.imbalance.first().open_time < t2
+                IS.AddImbalance(oo, cc, t2)
+    IS
+
+method Process(ImbalanceStructure IS, float o, float h, float l, float c, int t, float o1, float h1, float l1, float c1, int t1, float o2, float h2, float l2, float c2, int t2) =>
+    var int visible = 0
+    if IS.settings.show
+        if not ltf_hide or (ltf_hide and f_validTf(IS.settings.htf))
+            IS.FindImbalance(o, h, l, c, t, o1, h1, l1, c1, t1, o2, h2, l2, c2, t2)
+            visible := 1
+        IS.CheckMitigated(o, h, l, c)
+    visible
+
+var ImbalanceStructure FVG_1 = ImbalanceStructure.new(array.new<Imbalance>(), Imbalance_Settings.new(f1On, "15",  fvgBull, fvgBear, f1Max))
+var ImbalanceStructure FVG_2 = ImbalanceStructure.new(array.new<Imbalance>(), Imbalance_Settings.new(f2On, "60",  fvgBull, fvgBear, f2Max))
+var ImbalanceStructure FVG_3 = ImbalanceStructure.new(array.new<Imbalance>(), Imbalance_Settings.new(f3On, "240", fvgBull, fvgBear, f3Max))
+var ImbalanceStructure FVG_4 = ImbalanceStructure.new(array.new<Imbalance>(), Imbalance_Settings.new(f4On, "D",   fvgBull, fvgBear, f4Max))
+var ImbalanceStructure FVG_5 = ImbalanceStructure.new(array.new<Imbalance>(), Imbalance_Settings.new(f5On, "W",   fvgBull, fvgBear, f5Max))
+
+f_htfBars() =>
+    [open[1], high[1], low[1], close[1], time[1], open[2], high[2], low[2], close[2], time[2], open[3], high[3], low[3], close[3], time[3]]
+
+[o_1, h_1, l_1, c_1, t_1, o1_1, h1_1, l1_1, c1_1, t1_1, o2_1, h2_1, l2_1, c2_1, t2_1] = request.security(syminfo.tickerid, "15",  f_htfBars())
+[o_2, h_2, l_2, c_2, t_2, o1_2, h1_2, l1_2, c1_2, t1_2, o2_2, h2_2, l2_2, c2_2, t2_2] = request.security(syminfo.tickerid, "60",  f_htfBars())
+[o_3, h_3, l_3, c_3, t_3, o1_3, h1_3, l1_3, c1_3, t1_3, o2_3, h2_3, l2_3, c2_3, t2_3] = request.security(syminfo.tickerid, "240", f_htfBars())
+[o_4, h_4, l_4, c_4, t_4, o1_4, h1_4, l1_4, c1_4, t1_4, o2_4, h2_4, l2_4, c2_4, t2_4] = request.security(syminfo.tickerid, "D",   f_htfBars())
+[o_5, h_5, l_5, c_5, t_5, o1_5, h1_5, l1_5, c1_5, t1_5, o2_5, h2_5, l2_5, c2_5, t2_5] = request.security(syminfo.tickerid, "W",   f_htfBars())
+
+int TF_1 = FVG_1.Process(o_1, h_1, l_1, c_1, t_1, o1_1, h1_1, l1_1, c1_1, t1_1, o2_1, h2_1, l2_1, c2_1, t2_1)
+FVG_1.AdjustMargins(TF_1)
+int TF_2 = TF_1 + FVG_2.Process(o_2, h_2, l_2, c_2, t_2, o1_2, h1_2, l1_2, c1_2, t1_2, o2_2, h2_2, l2_2, c2_2, t2_2)
+FVG_2.AdjustMargins(TF_2)
+int TF_3 = TF_2 + FVG_3.Process(o_3, h_3, l_3, c_3, t_3, o1_3, h1_3, l1_3, c1_3, t1_3, o2_3, h2_3, l2_3, c2_3, t2_3)
+FVG_3.AdjustMargins(TF_3)
+int TF_4 = TF_3 + FVG_4.Process(o_4, h_4, l_4, c_4, t_4, o1_4, h1_4, l1_4, c1_4, t1_4, o2_4, h2_4, l2_4, c2_4, t2_4)
+FVG_4.AdjustMargins(TF_4)
+int TF_5 = TF_4 + FVG_5.Process(o_5, h_5, l_5, c_5, t_5, o1_5, h1_5, l1_5, c1_5, t1_5, o2_5, h2_5, l2_5, c2_5, t2_5)
+FVG_5.AdjustMargins(TF_5)
+
+// =====================================================================================
+//  SETUPS · commun : trades suivis, TP, filtres, checklists
+// =====================================================================================
+type Trd
+    int    s
+    int    dir
+    int    bar
+    int    tm
+    float  en
+    float  sl
+    float  tp
+    float  rr
+    int    st = 0
+    int    rbar
+    string txt
+    line   lE
+    line   lS
+    line   lT
+    box    bS
+    box    bT
+    label  lb
+    label  ar
+    line   lc
+
+var array<Trd> H1 = array.new<Trd>()
+var array<Trd> H2 = array.new<Trd>()
+var array<Trd> H3 = array.new<Trd>()
+var array<Trd> H4 = array.new<Trd>()
+
+// TP : premier niveau de liquidité vivant dans le sens du trade qui donne au moins le R
+// minimum ; sinon R fixe.
+f_tp(int dir, float en, float sl) =>
+    float risk = math.abs(en - sl)
+    float tp = na
+    string nm = ""
+    if tpMode == "Liquidité" and risk > 0 and lvP.size() > 0
+        for i = 0 to lvP.size() - 1
+            float p = lvP.get(i)
+            if (dir == 1 ? p > en : p < en) and math.abs(p - en) / risk >= minR
+                if na(tp) or math.abs(p - en) < math.abs(tp - en)
+                    tp := p
+                    nm := lvN.get(i)
+    if na(tp) and risk > 0
+        tp := en + dir * fixR * risk
+        nm := str.tostring(fixR, "#.#") + "R fixe"
+    [tp, risk > 0 ? math.abs(tp - en) / risk : na, nm]
+
+f_filt(bool uB, bool uT, bool uP, int dir, float rr) =>
+    bool b = not uB or tradeB == dir
+    bool t = not uT or inTrdX
+    bool p = not uP or (dir == 1 ? pdZ == -1 : pdZ == 1)
+    bool r = not useRR or (not na(rr) and rr >= minR)
+    b and t and p and r
+
+f_trdDel(Trd tr) =>
+    line.delete(tr.lE)
+    line.delete(tr.lS)
+    line.delete(tr.lT)
+    box.delete(tr.bS)
+    box.delete(tr.bT)
+    label.delete(tr.lb)
+    label.delete(tr.ar)
+    line.delete(tr.lc)
+    true
+
+f_alOn(int s) =>
+    s == 1 ? alS1 : s == 2 ? alS2 : s == 3 ? alS3 : alS4
+
+// nouveau signal : flèche, entrée, SL + zone, TP + zone, étiquette, ligne CISD
+f_trd(array<Trd> H, int s, int dir, float en, float sl, float tp, float rr, string info, int cx1, float cy, color cc, string cs, int cw) =>
+    Trd tr = Trd.new(s, dir, bar_index, time, en, sl, tp, rr, 0, na, "")
+    int x2 = bar_index + tradeBars
+    string side = dir == 1 ? "BUY" : "SELL"
+    tr.txt := "S" + str.tostring(s) + " " + side + " " + str.tostring(rr, "#.#") + "R" + (trPx ? " · " + f_px(en) + " / " + f_px(sl) + " / " + f_px(tp) : "")
+    tr.bS := box.new(bar_index, math.max(en, sl), x2, math.min(en, sl), border_color = color(na), bgcolor = slZone)
+    tr.bT := box.new(bar_index, math.max(en, tp), x2, math.min(en, tp), border_color = color(na), bgcolor = tpZone)
+    tr.lE := line.new(bar_index, en, x2, en, color = enCol, width = trW)
+    tr.lS := line.new(bar_index, sl, x2, sl, color = slCol, width = trW)
+    tr.lT := line.new(bar_index, tp, x2, tp, color = tpCol, width = trW)
+    tr.lb := label.new(x2, en, tr.txt, style = label.style_label_left, color = color(na), textcolor = dir == 1 ? arBuy : arSell, size = trTxtSz)
+    tr.ar := label.new(bar_index, dir == 1 ? low : high, "", yloc = dir == 1 ? yloc.belowbar : yloc.abovebar, style = dir == 1 ? label.style_triangleup : label.style_triangledown, color = dir == 1 ? arBuy : arSell, size = arSz)
+    if not na(cy) and not na(cx1)
+        tr.lc := line.new(cx1, cy, bar_index, cy, color = cc, style = f_sty(cs), width = cw)
+    H.push(tr)
+    if H.size() > histN
+        f_trdDel(H.shift())
+    if f_alOn(s)
+        alQ.push("S" + str.tostring(s) + " " + side + " · entrée " + f_px(en) + " · SL " + f_px(sl) + " · TP " + f_px(tp) + " (" + str.tostring(rr, "#.#") + "R) · " + info)
+    tr
+
+// suivi : TP touché → ✓ TP, SL touché → ✕ SL (même bougie : SL compté)
+f_upd(array<Trd> H) =>
+    if H.size() > 0
+        for tr in H
+            if tr.st == 0
+                if bar_index > tr.bar
+                    bool hS = tr.dir == 1 ? low <= tr.sl : high >= tr.sl
+                    bool hT = tr.dir == 1 ? high >= tr.tp : low <= tr.tp
+                    if hS or hT
+                        tr.st   := hS ? 2 : 1
+                        tr.rbar := bar_index
+                        label.set_text(tr.lb, tr.txt + (hS ? " ✕ SL" : " ✓ TP"))
+                int x2 = tr.st == 0 ? math.max(tr.bar + tradeBars, bar_index) : tr.rbar
+                line.set_x2(tr.lE, x2)
+                line.set_x2(tr.lS, x2)
+                line.set_x2(tr.lT, x2)
+                box.set_right(tr.bS, x2)
+                box.set_right(tr.bT, x2)
+                label.set_x(tr.lb, x2)
+    true
+
+f_upd(H1)
+f_upd(H2)
+f_upd(H3)
+f_upd(H4)
+
+f_isOpen(array<Trd> H) =>
+    H.size() > 0 and H.last().st == 0
+
+f_lastTxt(array<Trd> H) =>
+    string r = "—"
+    if H.size() > 0
+        Trd tr = H.last()
+        r := (tr.dir == 1 ? "BUY " : "SELL ") + str.format_time(tr.tm, "HH:mm") + (tr.st == 1 ? " ✓ TP" : tr.st == 2 ? " ✕ SL" : " · en cours")
+    r
+
+// checklist d'un setup
+type Pnl
+    array<string> lb
+    array<string> dt
+    array<int>    st
+    int           state = 0
+
+f_pnl() =>
+    Pnl.new(array.new<string>(), array.new<string>(), array.new<int>(), 0)
+
+var Pnl P1 = f_pnl()
+var Pnl P2 = f_pnl()
+var Pnl P3 = f_pnl()
+var Pnl P4 = f_pnl()
+
+f_pClr(Pnl P) =>
+    P.lb.clear()
+    P.dt.clear()
+    P.st.clear()
+    P.state := 0
+    true
+
+f_pAdd(Pnl P, string a, string b, int s) =>
+    P.lb.push(a)
+    P.dt.push(b)
+    P.st.push(s)
+    true
+
+f_pFilt(Pnl P, bool uB, bool uT, bool uP, int dir, float rr, bool has) =>
+    if uB
+        f_pAdd(P, "Biais TRADE", biasTxt(tradeB), has ? (tradeB == dir ? 1 : -1) : 0)
+    if uT
+        f_pAdd(P, "Temps de trading", f_ttName(), inTrdX ? 1 : -1)
+    if uP
+        f_pAdd(P, has ? (dir == 1 ? "Discount" : "Premium") : "Premium / Discount", pdZ == 1 ? "premium" : pdZ == -1 ? "discount" : pdOk ? "équilibre" : "—", has ? ((dir == 1 ? pdZ == -1 : pdZ == 1) ? 1 : -1) : 0)
+    if useRR
+        f_pAdd(P, "R:R ≥ " + str.tostring(minR, "#.#"), has and not na(rr) ? str.tostring(rr, "#.#") + "R" : "—", has and not na(rr) ? (rr >= minR ? 1 : -1) : 0)
+    true
+
+// la checklist ne sert qu'à la dernière bougie clôturée
+bool pnlNow = barstate.isconfirmed and last_bar_index - bar_index <= 1
+
+// =====================================================================================
+//  Suivi des zones (FVG HTF, POI) : contact, extrême, invalidation, rejet, CISD
+// =====================================================================================
+f_zUpd(Zt z) =>
+    bool inNow = z.dir == 1 ? low <= z.hi : high >= z.lo
+    bool newC = false
+    if inNow and not z.inPrev and bar_index > z.born
+        z.touches += 1
+        z.cBar    := bar_index
+        z.ext     := z.dir == 1 ? low : high
+        z.extBar  := bar_index
+        z.done1   := false
+        z.done3   := false
+        newC      := true
+    else if not na(z.cBar) and bar_index - z.cBar <= s2Wait
+        if z.dir == 1 ? low < z.ext : high > z.ext
+            z.ext    := z.dir == 1 ? low : high
+            z.extBar := bar_index
+    if z.dir == 1 ? close < z.lo : close > z.hi
+        z.dead := true
+    z.inPrev := inNow
+    newC
+
+// rejet « mèche » : clôture hors de la zone côté réaction, mèche dans la zone ≥ X % de la bougie
+f_rejW(Zt z) =>
+    float rg = high - low
+    rg > 0 and (z.dir == 1 ? close > z.hi and low <= z.hi and (math.min(z.hi, math.min(open, close)) - math.max(z.lo, low)) / rg * 100 >= s1Wick : close < z.lo and high >= z.lo and (math.min(z.hi, high) - math.max(z.lo, math.max(open, close))) / rg * 100 >= s1Wick)
+
+// rejet « englobante » : le corps englobe celui de la bougie précédente et clôture hors de la zone
+f_rejE(Zt z) =>
+    z.dir == 1 ? close > open and close > z.hi and close > math.max(open[1], close[1]) and open <= math.min(open[1], close[1]) and (low <= z.hi or low[1] <= z.hi) : close < open and close < z.lo and close < math.min(open[1], close[1]) and open >= math.max(open[1], close[1]) and (high >= z.lo or high[1] >= z.lo)
+
+// CISD : ouverture de la première bougie de la série de bougies opposées qui a fait
+// l'extrême (achat : série baissière qui a fait le plus bas).
+f_cisdLvl(int dir, int extBar) =>
+    float lvl = na
+    int   lb  = na
+    if not na(extBar)
+        int off = bar_index - extBar
+        if off >= 0 and off < 400
+            int k = off
+            bool opp = dir == 1 ? close[k] < open[k] : close[k] > open[k]
+            if not opp
+                k += 1
+            int n = 0
+            while n < 30
+                bool o2 = dir == 1 ? close[k] < open[k] : close[k] > open[k]
+                if not o2
+                    break
+                lvl := open[k]
+                lb  := bar_index - k
+                k   += 1
+                n   += 1
+    [lvl, lb]
+
+f_cisdHit(int dir, int extBar) =>
+    [lvl, lb] = f_cisdLvl(dir, extBar)
+    bool hit = not na(lvl) and (dir == 1 ? close > lvl and close[1] <= lvl : close < lvl and close[1] >= lvl)
+    [hit, lvl, lb]
+
+f_win(string mode) =>
+    mode == "CISD" ? s2Wait : s1Wait
+
+// confirmation d'une zone touchée : mèche, englobante ou CISD
+f_conf(string mode, Zt z) =>
+    bool ok = false
+    string tx = ""
+    float cy = na
+    int cx = na
+    bool inW = not na(z.cBar) and bar_index - z.cBar <= f_win(mode)
+    [h, l, b] = f_cisdHit(z.dir, z.extBar)
+    if mode == "Mèche"
+        ok := inW and f_rejW(z)
+        tx := "rejet mèche"
+    else if mode == "Englobante"
+        ok := inW and f_rejE(z)
+        tx := "rejet englobante"
+    else
+        ok := inW and h
+        cy := l
+        cx := b
+        tx := "CISD " + (na(l) ? "—" : f_px(l))
+    [ok, tx, cy, cx]
+
+// FVG HTF actifs : mise à jour des zones (S1, S3) et alerte de contact
+f_fvgZones(ImbalanceStructure IS, array<Zt> out) =>
+    if IS.settings.show and IS.imbalance.size() > 0
+        for imb in IS.imbalance
+            if not imb.mitigated and not na(imb.z)
+                Zt z = imb.z
+                bool nc = f_zUpd(z)
+                if nc and alFvgT
+                    alQ.push(z.nm + (z.dir == 1 ? " haussier" : " baissier") + " touché " + f_px(z.lo) + "–" + f_px(z.hi))
+                if not z.dead
+                    out.push(z)
+    true
+
+array<Zt> fz = array.new<Zt>()
+if barstate.isconfirmed and cxOn and (s1On or (s3On and s3Fvg) or alFvgT)
+    f_fvgZones(FVG_1, fz)
+    f_fvgZones(FVG_2, fz)
+    f_fvgZones(FVG_3, fz)
+    f_fvgZones(FVG_4, fz)
+    f_fvgZones(FVG_5, fz)
+
+f_zDist(Zt z) =>
+    z.dir == 1 ? math.abs(close - z.hi) : math.abs(z.lo - close)
+
+// =====================================================================================
+//  S1 · Rejet sur FVG HTF
+// =====================================================================================
+Zt  s1C = na
+int s1Stage = 0
+bool s1Sig = false
+if barstate.isconfirmed and cxOn and s1On and fz.size() > 0
+    bool blk = blockOpen and f_isOpen(H1)
+    for z in fz
+        bool elig  = not s1First or z.touches <= 1
+        bool inWin = not na(z.cBar) and bar_index - z.cBar <= f_win(s1Rej) and not z.done1
+        int  stg   = elig ? (inWin ? 2 : z.touches == 0 ? 1 : 0) : 0
+        if elig and inWin
+            [ok, tx, cy, cx] = f_conf(s1Rej, z)
+            if ok and not blk
+                float en = close
+                float sl = z.dir == 1 ? z.lo - slBufV : z.hi + slBufV
+                [tp, rr, tn] = f_tp(z.dir, en, sl)
+                if f_filt(s1Bias, s1TT, s1PD, z.dir, rr)
+                    f_trd(H1, 1, z.dir, en, sl, tp, rr, z.nm + " · " + tx + " · TP " + tn, cx, cy, cisdCol, cisdSty, cisdW)
+                    z.done1 := true
+                    blk     := blockOpen
+                    s1Sig   := true
+        if stg > 0 and (stg > s1Stage or (stg == s1Stage and f_zDist(z) < f_zDist(s1C)))
+            s1C     := z
+            s1Stage := stg
+
+if pnlNow and s1On
+    f_pClr(P1)
+    bool has = not na(s1C)
+    float rr = na
+    int   dr = 0
+    if has
+        Zt z = s1C
+        dr := z.dir
+        bool inWin = s1Stage == 2
+        [ok, tx, cy, cx] = f_conf(s1Rej, z)
+        float sl = z.dir == 1 ? z.lo - slBufV : z.hi + slBufV
+        [tp, rr0, tn] = f_tp(z.dir, close, sl)
+        rr := rr0
+        f_pAdd(P1, "FVG HTF", z.nm + " " + f_px(z.lo) + "–" + f_px(z.hi), 1)
+        f_pAdd(P1, "Contact", z.touches == 0 ? "en attente" : "n°" + str.tostring(z.touches), z.touches == 0 ? 0 : inWin ? 1 : 0)
+        f_pAdd(P1, "Pas de clôture au-delà", "bord " + f_px(z.dir == 1 ? z.lo : z.hi), 1)
+        f_pAdd(P1, s1Rej == "CISD" ? "CISD" : "Rejet (" + str.lower(s1Rej) + ")", inWin ? tx : "—", s1Sig or ok ? 1 : 0)
+        P1.state := inWin ? 1 : 0
+    else
+        f_pAdd(P1, "FVG HTF", "aucun actif", -1)
+    f_pFilt(P1, s1Bias, s1TT, s1PD, dr, rr, has)
+    if f_isOpen(H1)
+        P1.state := H1.last().dir == 1 ? 2 : 3
+
+// =====================================================================================
+//  S2 · Sweep de liquidité de séance + CISD
+// =====================================================================================
+type Sw
+    int    dir
+    float  lvl
+    string nm
+    float  ext
+    int    extBar
+    int    sBar
+    bool   back = false
+    bool   act  = false
+
+var Sw sB = Sw.new(1, na, "", na, na, na, false, false)
+var Sw sS = Sw.new(-1, na, "", na, na, na, false, false)
+float ph3 = ta.pivothigh(high, 3, 3)
+float pl3 = ta.pivotlow(low, 3, 3)
+var float lPH3 = na
+var int   lPH3B = na
+var float lPL3 = na
+var int   lPL3B = na
+if not na(ph3)
+    lPH3  := ph3
+    lPH3B := bar_index - 3
+if not na(pl3)
+    lPL3  := pl3
+    lPL3B := bar_index - 3
+
+f_s2Start(Sw w, float p, string nm) =>
+    w.lvl    := p
+    w.nm     := nm
+    w.ext    := w.dir == 1 ? low : high
+    w.extBar := bar_index
+    w.sBar   := bar_index
+    w.back   := false
+    w.act    := true
+    true
+
+f_s2Upd(Sw w) =>
+    if w.act
+        float mg = swpM * nz(atr21)
+        if w.dir == -1
+            if high > w.ext
+                w.ext    := high
+                w.extBar := bar_index
+            if close > w.lvl + 1.5 * mg
+                w.act := false
+            else if close < w.lvl
+                w.back := true
+        else
+            if low < w.ext
+                w.ext    := low
+                w.extBar := bar_index
+            if close < w.lvl - 1.5 * mg
+                w.act := false
+            else if close > w.lvl
+                w.back := true
+        if bar_index - w.sBar > s2Wait
+            w.act := false
+    true
+
+// confirmation du sweep : CISD ou MSS (pivot 3/3 opposé)
+f_s2Conf(Sw w) =>
+    [h, l, b] = f_cisdHit(w.dir, w.extBar)
+    bool  hit = h
+    float lvl = l
+    int   lb  = b
+    if s2Mode == "MSS"
+        float pv = w.dir == 1 ? lPH3 : lPL3
+        hit := not na(pv) and (w.dir == 1 ? close > pv and close[1] <= pv : close < pv and close[1] >= pv)
+        lvl := pv
+        lb  := w.dir == 1 ? lPH3B : lPL3B
+    [hit, lvl, lb]
+
+bool s2Sig = false
+if barstate.isconfirmed and cxOn and s2On
+    // nouveaux sweeps : le niveau le plus extrême de chaque côté
+    float hiP = na
+    string hiN = ""
+    float loP = na
+    string loN = ""
+    if evP.size() > 0
+        for i = 0 to evP.size() - 1
+            float p = evP.get(i)
+            if evH.get(i)
+                if na(hiP) or p > hiP
+                    hiP := p
+                    hiN := evN.get(i)
+            else
+                if na(loP) or p < loP
+                    loP := p
+                    loN := evN.get(i)
+    if not na(hiP)
+        f_s2Start(sS, hiP, hiN)
+    if not na(loP)
+        f_s2Start(sB, loP, loN)
+    f_s2Upd(sS)
+    f_s2Upd(sB)
+    bool blk = blockOpen and f_isOpen(H2)
+    for w in array.from(sB, sS)
+        if w.act and w.back and not blk
+            [hit, lvl, lb] = f_s2Conf(w)
+            if hit
+                float en = close
+                float sl = w.dir == 1 ? w.ext - slBufV : w.ext + slBufV
+                [tp, rr, tn] = f_tp(w.dir, en, sl)
+                if f_filt(s2Bias, s2TT, s2PD, w.dir, rr)
+                    f_trd(H2, 2, w.dir, en, sl, tp, rr, w.nm + " balayé " + f_px(w.lvl) + " · " + s2Mode + " " + f_px(lvl) + " · TP " + tn, lb, lvl, cisdCol, cisdSty, cisdW)
+                    w.act := false
+                    blk   := blockOpen
+                    s2Sig := true
+
+if pnlNow and s2On
+    f_pClr(P2)
+    Sw w = sB.act and sS.act ? (sB.back != sS.back ? (sB.back ? sB : sS) : (sB.sBar >= sS.sBar ? sB : sS)) : sB.act ? sB : sS.act ? sS : na
+    bool has = not na(w)
+    float rr = na
+    int dr = 0
+    if has
+        dr := w.dir
+        [hit, lvl, lb] = f_s2Conf(w)
+        float sl = w.dir == 1 ? w.ext - slBufV : w.ext + slBufV
+        [tp, rr0, tn] = f_tp(w.dir, close, sl)
+        rr := rr0
+        f_pAdd(P2, "Sweep", w.nm + " balayé " + f_px(w.lvl), 1)
+        f_pAdd(P2, "Clôture revenue", w.back ? "oui" : "pas encore", w.back ? 1 : 0)
+        f_pAdd(P2, s2Mode, na(lvl) ? "—" : s2Mode + " " + f_px(lvl), hit ? 1 : 0)
+        f_pAdd(P2, "Fenêtre", str.tostring(bar_index - w.sBar) + " / " + str.tostring(s2Wait) + " bougies", 1)
+        P2.state := 1
+    else
+        f_pAdd(P2, "Sweep", "en attente d'un niveau", 0)
+    f_pFilt(P2, s2Bias, s2TT, s2PD, dr, rr, has)
+    if f_isOpen(H2)
+        P2.state := H2.last().dir == 1 ? 2 : 3
+
+// =====================================================================================
+//  S3 · A+ : liquidité balayée dans un POI ISLB / FVG HTF
+// =====================================================================================
+f_kind(int k) =>
+    k == 1 ? "OB" : k == 2 ? "BB" : k == 3 ? "RB" : k == 4 ? "CRB" : "IFVG"
+
+var array<Zt> pz = array.new<Zt>()
+f_poiZ(int tfi, string tfn, float y, float y2, int x, int k, int b, int tt) =>
+    if not na(y) and not na(x)
+        float key = (tfi + 1) * 1e13 + x + k
+        float lo = math.min(y, nz(y2, y)) - (pDir == -1 ? sprTol : 0)
+        float hi = math.max(y, nz(y2, y)) + (pDir == 1 ? sprTol : 0)
+        int idx = -1
+        if pz.size() > 0
+            for i = 0 to pz.size() - 1
+                if pz.get(i).key == key and pz.get(i).dir == pDir
+                    idx := i
+        if idx < 0
+            pz.push(Zt.new(key, lo, hi, pDir, tfn + " " + f_kind(k), f_dec(b, tt), bar_index, bar_index))
+        else
+            Zt z = pz.get(idx)
+            z.seen := bar_index
+            z.lo   := lo
+            z.hi   := hi
+            z.et   := f_dec(b, tt)
+    true
+
+// liquidité balayée devant la zone aujourd'hui, ou dans / près de la zone pendant le contact
+f_liqFront(Zt z) =>
+    bool ok = false
+    string nm = ""
+    if tdP.size() > 0
+        for i = 0 to tdP.size() - 1
+            if not ok and tdH.get(i) == (z.dir == -1)
+                float p = tdP.get(i)
+                bool front = z.dir == 1 ? p > z.hi + cDist and p <= z.hi + maxDch : p < z.lo - cDist and p >= z.lo - maxDch
+                bool near  = p >= z.lo - cDist and p <= z.hi + cDist and not na(z.cBar) and tdB.get(i) >= z.cBar
+                if front or near
+                    ok := true
+                    nm := tdN.get(i) + " " + f_px(p)
+    [ok, nm]
+
+// type d'entrée ISLB d'une zone : POI = moteur ; FVG = empilement des niveaux balayés devant
+f_et(Zt z) =>
+    string r = z.et
+    if r == ""
+        [bs, tt, nn] = f_eval(tdP, tdN, tdH, z.dir, z.dir == 1 ? z.hi : z.lo, z.dir == 1 ? z.hi + maxDch : z.lo - maxDch, cDist)
+        r := f_dec(bs, tt)
+    r
+
+f_s3Conf(Zt z) =>
+    [o1, x1, y1, b1] = f_conf(s1Rej, z)
+    [o2, x2, y2, b2] = f_conf("CISD", z)
+    bool ok = s3Conf == "Rejet" ? o1 : s3Conf == "CISD" ? o2 : o1 or o2
+    string tx = s3Conf == "Rejet" ? x1 : s3Conf == "CISD" ? x2 : (o1 ? x1 : x2)
+    float cy = s3Conf == "Rejet" ? y1 : s3Conf == "CISD" ? y2 : (o1 ? y1 : y2)
+    int   cx = s3Conf == "Rejet" ? b1 : s3Conf == "CISD" ? b2 : (o1 ? b1 : b2)
+    [ok, tx, cy, cx]
+
+int s3W = s3Conf == "Rejet" ? f_win(s1Rej) : s2Wait
+
+array<Zt> s3z = array.new<Zt>()
+if barstate.isconfirmed and cxOn and s3On
+    if s3Poi and pOn
+        if p1H
+            f_poiZ(0, "1HR", r1uY, r1uZ, r1uX, r1uK, r1uB, r1uT)
+            f_poiZ(0, "1HR", r1mY, r1mZ, r1mX, r1mK, r1mB, r1mT)
+        if p4H
+            f_poiZ(1, "4HR", r4uY, r4uZ, r4uX, r4uK, r4uB, r4uT)
+            f_poiZ(1, "4HR", r4mY, r4mZ, r4mX, r4mK, r4mB, r4mT)
+        if pDy
+            f_poiZ(2, "D", rduY, rduZ, rduX, rduK, rduB, rduT)
+            f_poiZ(2, "D", rdmY, rdmZ, rdmX, rdmK, rdmB, rdmT)
+    if pz.size() > 0
+        for i = pz.size() - 1 to 0
+            Zt z = pz.get(i)
+            if z.seen < bar_index
+                pz.remove(i)
+            else
+                f_zUpd(z)
+                if not z.dead
+                    s3z.push(z)
+    if s3Fvg and fz.size() > 0
+        for z in fz
+            s3z.push(z)
+
+Zt  s3C = na
+int s3Stage = 0
+bool s3Sig = false
+if barstate.isconfirmed and cxOn and s3On and s3z.size() > 0
+    bool blk = blockOpen and f_isOpen(H3)
+    for z in s3z
+        bool inWin = not na(z.cBar) and bar_index - z.cBar <= s3W and not z.done3
+        [lq, lqN] = f_liqFront(z)
+        int stg = inWin ? (lq ? 3 : 2) : (lq ? 1 : 0)
+        if inWin and lq and not blk
+            [ok, tx, cy, cx] = f_s3Conf(z)
+            if ok
+                float en = close
+                float sl = z.dir == 1 ? math.min(z.lo, nz(z.ext, z.lo)) - slBufV : math.max(z.hi, nz(z.ext, z.hi)) + slBufV
+                [tp, rr, tn] = f_tp(z.dir, en, sl)
+                if f_filt(s3Bias, s3TT, s3PD, z.dir, rr)
+                    f_trd(H3, 3, z.dir, en, sl, tp, rr, z.nm + " · " + f_et(z) + " · " + lqN + " balayé · " + tx + " · TP " + tn, cx, cy, cisdCol, cisdSty, cisdW)
+                    z.done3 := true
+                    blk     := blockOpen
+                    s3Sig   := true
+        if stg > 0 and (stg > s3Stage or (stg == s3Stage and f_zDist(z) < f_zDist(s3C)))
+            s3C     := z
+            s3Stage := stg
+
+if pnlNow and s3On
+    f_pClr(P3)
+    bool has = not na(s3C)
+    float rr = na
+    int dr = 0
+    if has
+        Zt z = s3C
+        dr := z.dir
+        bool inWin = s3Stage >= 2
+        [lq, lqN] = f_liqFront(z)
+        [ok, tx, cy, cx] = f_s3Conf(z)
+        float sl = z.dir == 1 ? math.min(z.lo, nz(z.ext, z.lo)) - slBufV : math.max(z.hi, nz(z.ext, z.hi)) + slBufV
+        [tp, rr0, tn] = f_tp(z.dir, close, sl)
+        rr := rr0
+        string et = f_et(z)
+        f_pAdd(P3, "Zone", z.nm + " " + f_px(z.dir == 1 ? z.hi : z.lo), 1)
+        f_pAdd(P3, "Liquidité balayée", lq ? lqN : "pas encore", lq ? 1 : -1)
+        f_pAdd(P3, "Contact", z.touches == 0 ? "en attente" : "n°" + str.tostring(z.touches), inWin ? 1 : 0)
+        f_pAdd(P3, "Confirmation", inWin ? tx : "—", s3Sig or ok ? 1 : 0)
+        f_pAdd(P3, "Bonus Direct", et, et == "Direct" ? 1 : -1)
+        P3.state := s3Stage >= 2 ? 1 : 0
+    else
+        f_pAdd(P3, "Zone", "aucun POI / FVG", -1)
+    f_pFilt(P3, s3Bias, s3TT, s3PD, dr, rr, has)
+    if f_isOpen(H3)
+        P3.state := H3.last().dir == 1 ? 2 : 3
+
+// =====================================================================================
+//  S4 · PO3 : C2 balaie C1, puis CISD pendant C2 (réalisation originale)
+// =====================================================================================
+int    tfSec  = timeframe.in_seconds()
+string s4Auto = tfSec <= 60 ? "15" : tfSec <= 300 ? "60" : tfSec <= 900 ? "240" : "D"
+string s4tf   = s4Align == "Auto" ? s4Auto : s4Align == "M1 → M15" ? "15" : s4Align == "M5 → H1" ? "60" : s4Align == "M15 → H4" ? "240" : s4Align == "H1 → D1" ? "D" : s4Cust
+bool   s4Ok   = timeframe.in_seconds(s4tf) > tfSec
+// C1 et la bougie d'avant : clôturées ([1] + lookahead, sans repeinture)
+[c1H, c1L, c1O, c1C, c1T, c0H, c0L, c0O, c0C, c0T] = request.security(syminfo.tickerid, s4tf, [high[1], low[1], open[1], close[1], time[1], high[2], low[2], open[2], close[2], time[2]], lookahead = barmerge.lookahead_on)
+
+// C2 : bougie HTF en cours, suivie sur les bougies du graphique (aucune donnée future)
+bool s4New = ta.change(time(s4tf)) != 0
+var float c2O  = na
+var float c2H  = na
+var float c2L  = na
+var int   c2HB = na
+var int   c2LB = na
+var bool  s4FB = false
+var bool  s4FS = false
+if s4New or na(c2O)
+    c2O  := open
+    c2H  := high
+    c2L  := low
+    c2HB := bar_index
+    c2LB := bar_index
+    s4FB := false
+    s4FS := false
+else
+    if high > c2H
+        c2H  := high
+        c2HB := bar_index
+    if low < c2L
+        c2L  := low
+        c2LB := bar_index
+
+var array<line> s4Op = array.new<line>()
+if s4New and s4Opens and cxOn and s4On and s4Ok
+    s4Op.push(line.new(bar_index, low, bar_index, high, extend = extend.both, color = s4OpCol, style = line.style_dotted))
+    if s4Op.size() > 30
+        line.delete(s4Op.shift())
+
+var array<float> pjLv = array.new<float>()
+if barstate.isfirst
+    for s in str.split(s4Lvls, ",")
+        float v = str.tonumber(str.trim(s))
+        if not na(v)
+            pjLv.push(v)
+
+var array<line>  s4PjL = array.new<line>()
+var array<label> s4PjT = array.new<label>()
+
+f_s4Ext(int dir, int eb) =>
+    int off = bar_index - eb
+    s4Meth == "Mèche" ? (dir == -1 ? high[off] : low[off]) : (dir == -1 ? math.max(open[off], close[off]) : math.min(open[off], close[off]))
+
+f_s4Tp(int dir, float en, float sl, float lvl, float ext) =>
+    float tp = s4TpM == "Projection" ? lvl + s4TpP * (ext - lvl) : s4TpM == "C1 opposé" ? (dir == -1 ? c1L : c1H) : na
+    string nm = s4TpM == "Projection" ? "projection " + str.tostring(s4TpP) : "C1 " + (dir == -1 ? "L" : "H")
+    float risk = math.abs(en - sl)
+    float rr = na
+    if s4TpM == "Mode commun" or na(tp) or (dir == -1 ? tp >= en : tp <= en) or risk <= 0
+        [t2, r2, n2] = f_tp(dir, en, sl)
+        tp := t2
+        rr := r2
+        nm := n2
+    else
+        rr := math.abs(tp - en) / risk
+    [tp, rr, nm]
+
+bool s4Sig = false
+if barstate.isconfirmed and cxOn and s4On and s4Ok and not na(c1H)
+    bool blk = blockOpen and f_isOpen(H4)
+    for d in array.from(-1, 1)
+        bool swept = d == -1 ? c2H > c1H : c2L < c1L
+        bool fired = d == -1 ? s4FS : s4FB
+        bool allow = s4BiasM == "Neutre" or (s4BiasM == "Haussier" ? d == 1 : d == -1)
+        if swept and not fired and allow and not blk
+            int eb = d == -1 ? c2HB : c2LB
+            [hit, lvl, lb] = f_cisdHit(d, eb)
+            if hit
+                float en  = close
+                float sl  = d == -1 ? c2H + slBufV : c2L - slBufV
+                float ext = f_s4Ext(d, eb)
+                [tp, rr, tn] = f_s4Tp(d, en, sl, lvl, ext)
+                if f_filt(s4Bias, s4TT, s4PD, d, rr)
+                    f_trd(H4, 4, d, en, sl, tp, rr, "C2 " + f_tfName(s4tf) + " · C1 " + (d == -1 ? "H " + f_px(c1H) : "L " + f_px(c1L)) + " balayé · CISD " + f_px(lvl) + " · TP " + tn, lb, lvl, d == 1 ? s4BuCol : s4BeCol, s4Sty, s4W)
+                    if d == -1
+                        s4FS := true
+                    else
+                        s4FB := true
+                    blk   := blockOpen
+                    s4Sig := true
+                    // C2 et projections du dernier signal
+                    for l in s4PjL
+                        line.delete(l)
+                    for t in s4PjT
+                        label.delete(t)
+                    s4PjL.clear()
+                    s4PjT.clear()
+                    color cc = d == 1 ? s4BuCol : s4BeCol
+                    if s4C2Lb
+                        s4PjT.push(label.new(lb, lvl, "C2", style = d == -1 ? label.style_label_up : label.style_label_down, color = color(na), textcolor = cc, size = size.tiny))
+                    if pjShow and pjLv.size() > 0
+                        for n in pjLv
+                            float y = lvl + n * (ext - lvl)
+                            s4PjL.push(line.new(bar_index, y, bar_index + 15, y, color = s4PjCol, style = line.style_dotted))
+                            s4PjT.push(label.new(bar_index + 15, y, str.tostring(n), style = label.style_label_left, color = color(na), textcolor = s4PjCol, size = size.tiny))
+
+if pnlNow and s4On
+    f_pClr(P4)
+    int dr = 0
+    if not na(c1H)
+        bool sH = c2H > c1H and not s4FS
+        bool sL = c2L < c1L and not s4FB
+        dr := sH and sL ? (c2HB >= c2LB ? -1 : 1) : sH ? -1 : sL ? 1 : 0
+    bool has = s4Ok and dr != 0
+    float rr = na
+    f_pAdd(P4, "Unité HTF", s4Ok ? f_tfName(s4tf) + " · C2 en cours" : "invalide pour ce graphique", s4Ok ? 1 : -1)
+    if has
+        int eb = dr == -1 ? c2HB : c2LB
+        [hit, lvl, lb] = f_cisdHit(dr, eb)
+        float sl = dr == -1 ? c2H + slBufV : c2L - slBufV
+        [tp, rr0, tn] = f_s4Tp(dr, close, sl, nz(lvl, close), f_s4Ext(dr, eb))
+        rr := rr0
+        bool allow = s4BiasM == "Neutre" or (s4BiasM == "Haussier" ? dr == 1 : dr == -1)
+        f_pAdd(P4, "Sweep de C1", dr == -1 ? "C1 H " + f_px(c1H) + " pris" : "C1 L " + f_px(c1L) + " pris", 1)
+        f_pAdd(P4, "CISD", na(lvl) ? "—" : f_px(lvl), hit or s4Sig ? 1 : 0)
+        f_pAdd(P4, "Biais PO3", s4BiasM, allow ? 1 : -1)
+        P4.state := 1
+    else
+        f_pAdd(P4, "Sweep de C1", s4Ok and not na(c1H) ? "H " + f_px(c1H) + " / L " + f_px(c1L) : "—", 0)
+    f_pFilt(P4, s4Bias, s4TT, s4PD, dr, rr, has)
+    if f_isOpen(H4)
+        P4.state := H4.last().dir == 1 ? 2 : 3
+
+// =====================================================================================
+//  DESSINS de la dernière bougie : niveaux, niveaux balayés, POI, premium / discount,
+//  bougies HTF du PO3 (recréés à chaque mise à jour, comme ISLB)
+// =====================================================================================
+var array<line>  lqLines  = array.new<line>()
+var array<label> lqLbls   = array.new<label>()
+var array<line>  poiLines = array.new<line>()
+var array<label> poiLbls  = array.new<label>()
+var array<box>   lastBoxes = array.new<box>()
+
+f_show(float p, string nm, bool ok, bool sh, int xs) =>
+    if sh and ok and not na(p)
+        int x1 = na(xs) ? time - 6 * 3600000 : xs
+        int x2 = time + 2 * 3600000
+        lqLines.push(line.new(x1, p, x2, p, xloc = xloc.bar_time, color = lvCol, style = f_sty(lvSty), width = lvW))
+        lqLbls.push(label.new(x2, p, nm, xloc = xloc.bar_time, style = label.style_label_left, color = color(na), textcolor = lvTxt, size = lvSz))
+    true
+
+// IFVG d'une unité supérieure : la ligne part de la bougie du graphique dont la mèche a fait le niveau
+f_wickTime(int t, int dur, float y, bool lowW) =>
+    int   best = t
+    float bd   = na
+    for i = 0 to 1999
+        int ti = time[i]
+        if na(ti) or ti < t
+            break
+        if ti < t + dur
+            float v = lowW ? low[i] : high[i]
+            float d = math.abs(v - y)
+            if na(bd) or d < bd
+                bd   := d
+                best := ti
+    best
+
+// étiquettes des POI : un seul texte pour les POI au même niveau
+var array<float>  plY = array.new<float>()
+var array<int>    plX = array.new<int>()
+var array<string> plT = array.new<string>()
+var array<string> plN = array.new<string>()
+var array<bool>   plM = array.new<bool>()
+float mrgTol = 0.15 * nz(atr1H, ta.atr(14))
+
+f_drawPoi(string tf, float y, int x, int k, int best, int tot, string nm, color col, int te, int sz) =>
+    if not na(y) and not na(x)
+        int dur = tf == "1HR" ? 3600000 : tf == "4HR" ? 14400000 : 86400000
+        int xr  = na(te) ? time_close : math.min(te + dur, time_close)
+        bool skip = false
+        if not na(te)
+            int hitT = na
+            bool hitA = false
+            for i = 0 to 1500
+                if time[i] < te
+                    break
+                bool hit = pDir == 1 ? low[i] <= y + sprTol : high[i] >= y - sprTol
+                if hit
+                    hitT := time[i]
+                    hitA := not inTrd[i]
+            if not na(hitT)
+                xr := hitT + timeframe.in_seconds() * 1000
+            skip := hitA
+        int x1 = k == 5 and dur > timeframe.in_seconds() * 1000 ? f_wickTime(x, dur, y, pDir == -1) : x
+        if dur < timeframe.in_seconds() * 1000
+            for i = 0 to 1500
+                if time[i] <= x
+                    x1 := time[i]
+                    break
+        if not skip
+            poiLines.push(line.new(x1, y, xr, y, xloc = xloc.bar_time, color = col, width = na(te) ? poiLnW : 1))
+        string kind = f_kind(k)
+        string txt  = tf + " " + kind + (showEt ? " · " + f_dec(best, tot) : "")
+        plY.push(skip ? na : y)
+        plX.push(xr)
+        plT.push(txt)
+        plN.push(poiNames ? nm : "")
+        plM.push(not na(te))
+    true
+
+f_writeLabels() =>
+    int n = plY.size()
+    array<bool> used = array.new<bool>(n, false)
+    if n > 0
+        for i = 0 to n - 1
+            if na(plY.get(i))
+                used.set(i, true)
+            else if not used.get(i)
+                used.set(i, true)
+                string txt = plT.get(i)
+                string nms = plN.get(i)
+                int    xr  = plX.get(i)
+                bool   mi  = plM.get(i)
+                if i < n - 1
+                    for j = i + 1 to n - 1
+                        if not used.get(j) and not na(plY.get(j)) and plM.get(j) == mi and math.abs(plY.get(j) - plY.get(i)) <= mrgTol
+                            used.set(j, true)
+                            txt := txt + ", " + plT.get(j)
+                            if plN.get(j) != ""
+                                nms := nms == "" ? plN.get(j) : nms + " | " + plN.get(j)
+                            xr := math.max(xr, plX.get(j))
+                string full = txt + (nms != "" ? "\n" + nms : "")
+                poiLbls.push(label.new(xr, plY.get(i), full, xloc = xloc.bar_time, style = label.style_label_left, color = color(na), textcolor = mi ? mitCol : poiTxtCol, size = mi ? mitSz : poiTxtSz))
+    true
+
+if barstate.islast
+    for l in lqLines
+        line.delete(l)
+    for lb in lqLbls
+        label.delete(lb)
+    for pl in poiLines
+        line.delete(pl)
+    for lb in poiLbls
+        label.delete(lb)
+    for b in lastBoxes
+        box.delete(b)
+    lqLines.clear()
+    lqLbls.clear()
+    poiLines.clear()
+    poiLbls.clear()
+    lastBoxes.clear()
+    // niveaux de séance de la journée en cours seulement (depuis l'Asie du jour)
+    bool tdF = not na(L_fftT0) and L_fftT0 >= L_aT0
+    bool tdK = not na(L_kzT0) and L_kzT0 >= L_aT0
+    bool tdL = not na(L_ldnT0) and L_ldnT0 >= L_aT0
+    bool tdNy = not na(L_nycT0) and L_nycT0 >= L_aT0
+    bool tdP2 = not na(npT0) and npT0 >= L_aT0
+    f_show(L_aHi,  "Asia H",      okAH,  shAsia, L_aT0)
+    f_show(L_aLo,  "Asia L",      okAL,  shAsia, L_aT0)
+    f_show(L_fftH, "Frankfurt H", okFH and tdF, shFft, L_fftT0)
+    f_show(L_fftL, "Frankfurt L", okFL and tdF, shFft, L_fftT0)
+    f_show(L_kzH,  "KZ H",        okKH and tdK, shKz, L_kzT0)
+    f_show(L_kzL,  "KZ L",        okKL and tdK, shKz, L_kzT0)
+    f_show(L_ldnH, "London H",    okLH and tdL, shLdn, L_ldnT0)
+    f_show(L_ldnL, "London L",    okLL and tdL, shLdn, L_ldnT0)
+    f_show(L_nycH, "NY liq H",    okNH and tdNy, shNyc, L_nycT0)
+    f_show(L_nycL, "NY liq L",    okNL and tdNy, shNyc, L_nycT0)
+    f_show(npH,    "NY PM H",     okNPH and tdP2, shNp, npT0)
+    f_show(npL,    "NY PM L",     okNPL and tdP2, shNp, npT0)
+    f_show(pdH,  "PDH",   okPDH, shPd, na)
+    f_show(pdL,  "PDL",   okPDL, shPd, na)
+    f_show(pd50, "PD 50%", true, shP50, na)
+    f_show(pwH,  "PWH",   okPWH, shPw, na)
+    f_show(pwL,  "PWL",   okPWL, shPw, na)
+    f_show(pmH,  "PMH",   okPMH, shPm, na)
+    f_show(pmL,  "PML",   okPML, shPm, na)
+    f_show(eqH,  "EQH",   okEH,  shEq, na)
+    f_show(eqL,  "EQL",   okEL,  shEq, na)
+    // niveaux balayés aujourd'hui : très clairs, jusqu'à la bougie du balayage, ✕ discret
+    if shTaken and tdP.size() > 0
+        for i = 0 to tdP.size() - 1
+            int xs = na(tdX.get(i)) ? tdT.get(i) - 6 * 3600000 : tdX.get(i)
+            lqLines.push(line.new(xs, tdP.get(i), tdT.get(i), tdP.get(i), xloc = xloc.bar_time, color = tkCol, style = f_sty(lvSty), width = 1))
+            lqLbls.push(label.new(tdT.get(i), tdP.get(i), "✕ " + tdN.get(i), xloc = xloc.bar_time, style = label.style_label_left, color = color(na), textcolor = tkCol, size = size.tiny))
+    // POI ISLB
+    plY.clear()
+    plX.clear()
+    plT.clear()
+    plN.clear()
+    plM.clear()
+    if showPoi and pOn and canShow
+        if p1H
+            f_drawPoi("1HR", r1uY, r1uX, r1uK, r1uB, r1uT, r1uN, poiLnCol, na, poiTxtSz)
+            if not hideMit
+                f_drawPoi("1HR", r1mY, r1mX, r1mK, r1mB, r1mT, r1mN, mitCol, r1mE, mitSz)
+        if p4H
+            f_drawPoi("4HR", r4uY, r4uX, r4uK, r4uB, r4uT, r4uN, poiLnCol, na, poiTxtSz)
+            if not hideMit
+                f_drawPoi("4HR", r4mY, r4mX, r4mK, r4mB, r4mT, r4mN, mitCol, r4mE, mitSz)
+        if pDy
+            f_drawPoi("D", rduY, rduX, rduK, rduB, rduT, rduN, poiLnCol, na, poiTxtSz)
+            if not hideMit
+                f_drawPoi("D", rdmY, rdmX, rdmK, rdmB, rdmT, rdmN, mitCol, rdmE, mitSz)
+        f_writeLabels()
+    // premium / discount du range de swing, jusqu'à la bougie en cours + 10
+    if pdOk and canShow
+        int x1 = math.min(pdHiT, pdLoT)
+        int x2 = time + 10 * timeframe.in_seconds() * 1000
+        if pdShow
+            lastBoxes.push(box.new(x1, pdHi, x2, pdEq, xloc = xloc.bar_time, border_color = color(na), bgcolor = pdPrem))
+            lastBoxes.push(box.new(x1, pdEq, x2, pdLo, xloc = xloc.bar_time, border_color = color(na), bgcolor = pdDisc))
+            lqLbls.push(label.new(x2, pdHi, "Premium", xloc = xloc.bar_time, style = label.style_label_left, color = color(na), textcolor = pdTxtCol, size = pdTxtSz))
+            lqLbls.push(label.new(x2, pdLo, "Discount", xloc = xloc.bar_time, style = label.style_label_left, color = color(na), textcolor = pdTxtCol, size = pdTxtSz))
+        lqLines.push(line.new(x1, pdEq, x2, pdEq, xloc = xloc.bar_time, color = pdEqCol, style = f_sty(pdEqSty), width = 1))
+        lqLbls.push(label.new(x2, pdEq, "EQ 50%", xloc = xloc.bar_time, style = label.style_label_left, color = color(na), textcolor = pdTxtCol, size = pdTxtSz))
+        if oteShow
+            float rg = pdHi - pdLo
+            lastBoxes.push(box.new(x1, pdHi - 0.62 * rg, x2, pdHi - 0.79 * rg, xloc = xloc.bar_time, border_color = oteCol, bgcolor = color(na)))
+            lastBoxes.push(box.new(x1, pdLo + 0.79 * rg, x2, pdLo + 0.62 * rg, xloc = xloc.bar_time, border_color = oteCol, bgcolor = color(na)))
+    // PO3 : bougies HTF à droite du prix (C2 en cours à droite)
+    if cdlShow and s4On and s4Ok and canShow and not na(c1H)
+        int base = bar_index + s4CdlOff
+        for j = 0 to s4CdlN - 1
+            int   i  = s4CdlN - 1 - j
+            float o  = i == 0 ? c2O : i == 1 ? c1O : c0O
+            float h  = i == 0 ? c2H : i == 1 ? c1H : c0H
+            float l  = i == 0 ? c2L : i == 1 ? c1L : c0L
+            float c  = i == 0 ? close : i == 1 ? c1C : c0C
+            int   x  = base + j * 4
+            color bc = c >= o ? s4Up : s4Dn
+            if not na(o)
+                lqLines.push(line.new(x, h, x, l, color = s4Wk, width = 1))
+                lastBoxes.push(box.new(x - 1, math.max(o, c), x + 1, math.min(o, c), border_color = s4Wk, bgcolor = bc))
+        lqLbls.push(label.new(base + (s4CdlN - 1) * 4, c2H, f_tfName(s4tf) + " C2", style = label.style_label_down, color = color(na), textcolor = s4Wk, size = size.tiny))
+
+// =====================================================================================
+//  TABLEAUX : BIAS (ISLB) et un bloc par setup (style ticket)
+// =====================================================================================
+biasClr2(int b) => b == 1 ? buyCol : b == -1 ? sellCol : TK_LB
+
+// time left until the candle of that timeframe closes = next possible bias update
+f_left(string tf) =>
+    int tfMs = timeframe.in_seconds(tf) * 1000
+    int tc   = timeframe.in_seconds() <= timeframe.in_seconds(tf) ? time_close(tf) : time_close - int(math.floor((time_close - timenow) / tfMs)) * tfMs
+    int ms   = math.max(tc - timenow, 0)
+    int h  = int(ms / 3600000)
+    int m  = int((ms % 3600000) / 60000)
+    int sc = int((ms % 60000) / 1000)
+    h > 0 ? str.tostring(h) + "h " + str.tostring(m, "00") + "m" : str.tostring(m, "00") + ":" + str.tostring(sc, "00")
+
+f_pos(string p) =>
+    p == "Top right" ? position.top_right : p == "Top left" ? position.top_left : p == "Bottom right" ? position.bottom_right : p == "Bottom left" ? position.bottom_left : p == "Middle right" ? position.middle_right : position.middle_left
+
+f_cell(table t, int c, int r, string tx, color tc, string al, string sz, color bg) =>
+    table.cell(t, c, r, tx, text_color = tc, text_halign = al, text_size = sz, bgcolor = bg)
+
+bool samePos = tSet and tPos == biasPos
+var table tb = showBias or samePos ? table.new(f_pos(biasPos), 3, 70, bgcolor = TK_BG, frame_color = TK_BD, frame_width = 1, border_color = color.new(TK_BD, 60), border_width = 1) : na
+var table ts = tSet and not samePos ? table.new(f_pos(tPos), 3, 60, bgcolor = TK_BG, frame_color = TK_BD, frame_width = 1, border_color = color.new(TK_BD, 60), border_width = 1) : na
+
+// ─────────────────────────── Early warnings / session status (ISLB) ───────────────────────────
+int tzOff = isMan or isWinN or isAutoN ? 0 : 240
+f_hm(string sx, int part) =>
+    int k = part == 0 ? 0 : 5
+    int(str.tonumber(str.substring(sx, k, k + 2))) * 60 + int(str.tonumber(str.substring(sx, k + 2, k + 4)))
+int mAsiaS = isMan ? f_hm(manAs, 0) : isWinN ? (isGold ? 270 : 210) : 1020
+int mAsiaE = isMan ? f_hm(manAs, 1) : isWinN ? (isGold ? 690 : 630) : 15
+int mFftS  = isMan ? f_hm(manFft, 0) : isWinN ? 690  : 60
+int mKzS   = isMan ? f_hm(manKz, 0) : isWinN ? 750  : 120
+int mLdnS  = isMan ? f_hm(manLdS, 0) : isWinN ? 810  : 180
+int mLdnE  = isMan ? f_hm(manLdT, 1) : isWinN ? 990  : 300
+int mNyLS  = isMan ? f_hm(manNyL, 0) : isWinN ? 990  : 420
+int mNyS   = isMan ? f_hm(manNyT, 0) : isWinN ? 1050 : 480
+int mNyE   = isMan ? f_hm(manNyT, 1) : isWinN ? 1230 : 720
+int mNpS   = isMan ? f_hm(manNyP, 0) : isWinN ? 1410 : 780
+int mNpE   = isMan ? f_hm(manNyP, 1) : isWinN ? 150  : 960
+var array<int> warned = array.new<int>()
+
+f_evT(int nyMin) =>
+    int m = (nyMin + tzOff) % 1440
+    int t = timestamp(tzN, year(timenow, tzN), month(timenow, tzN), dayofmonth(timenow, tzN), int(m / 60), m % 60)
+    t < timenow ? t + 86400000 : t
+
+f_pre(string msgIn, bool on, int nyMin, string name) =>
+    string r = msgIn
+    if on and alPre and barstate.isrealtime
+        int t = f_evT(nyMin)
+        if timenow >= t - preMin * 60000 and not warned.includes(t)
+            warned.push(t)
+            if warned.size() > 50
+                warned.shift()
+            string txt = name + " à " + str.format_time(t, "HH:mm", "America/New_York") + " NY"
+            r := r == "" ? txt : r + " · " + txt
+    r
+
+string pre = ""
+pre := f_pre(pre, true, mAsiaS, "Asie ouvre")
+pre := f_pre(pre, true, mAsiaE, "Asie ferme")
+pre := f_pre(pre, true, mFftS,  "Bougie Frankfurt")
+pre := f_pre(pre, true, mKzS,   "Killzone et temps de trading Londres")
+pre := f_pre(pre, true, mLdnS,  "Séance de Londres")
+pre := f_pre(pre, true, mLdnE,  "Fin du temps de trading Londres")
+pre := f_pre(pre, true, mNyLS,  "Bougie de liquidité NY")
+pre := f_pre(pre, true, mNyS,   "Séance et temps de trading New York")
+pre := f_pre(pre, true, mNyE,   "Fin du temps de trading New York")
+pre := f_pre(pre, nyPmOn, mNpS, "NY PM")
+if pre != ""
+    alert("CX Setups " + syminfo.ticker + " : dans " + str.tostring(preMin) + " min : " + pre, alert.freq_all)
+
+f_m(int nyMin) =>
+    (nyMin + tzOff) % 1440
+int nowMin = hour(timenow, tzN) * 60 + minute(timenow, tzN)
+int nowSec = second(timenow, tzN)
+f_in(int a, int b) =>
+    int st = f_m(a)
+    int en = f_m(b)
+    st < en ? nowMin >= st and nowMin < en : nowMin >= st or nowMin < en
+f_until(int nyMin) =>
+    int d = (f_m(nyMin) - nowMin + 1440) % 1440
+    (d == 0 ? 1440 : d) * 60000 - nowSec * 1000
+f_fmt(int ms) =>
+    int h = int(ms / 3600000)
+    int m = int((ms % 3600000) / 60000)
+    int sc = int((ms % 60000) / 1000)
+    h > 0 ? str.tostring(h) + "h " + str.tostring(m, "00") + "m" : str.tostring(m, "00") + ":" + str.tostring(sc, "00")
+
+// marché fermé : du vendredi 17:00 au dimanche 17:00 (New York)
+int  nyDow = dayofweek(timenow, "America/New_York")
+int  nyNow = hour(timenow, "America/New_York") * 60 + minute(timenow, "America/New_York")
+bool wkClosed = nyDow == dayofweek.saturday or (nyDow == dayofweek.sunday and nyNow < 1020) or (nyDow == dayofweek.friday and nyNow >= 1020)
+
+string stTxt = "NO TRADE TIME"
+bool   stTrd = false
+int    stEnd = na
+if wkClosed
+    stTxt := "MARKET CLOSED"
+else if f_in(mKzS, mLdnS)
+    stTxt := "LONDON KILLZONE"
+    stTrd := true
+    stEnd := mLdnS
+else if f_in(mLdnS, mLdnE)
+    stTxt := "LONDON SESSION"
+    stTrd := true
+    stEnd := mLdnE
+else if f_in(mNyS, mNyE)
+    stTxt := "NEW YORK SESSION"
+    stTrd := true
+    stEnd := mNyE
+else if nyPmOn and f_in(mNpS, mNpE)
+    stTxt := "NY PM SESSION"
+    stTrd := nyPmTrd
+    stEnd := mNpE
+else if f_in(mFftS, mKzS)
+    stTxt := "FRANKFURT CANDLE · NO TRADE"
+    stEnd := mKzS
+else if f_in(mNyLS, mNyS)
+    stTxt := "NY LIQ. CANDLE · NO TRADE"
+    stEnd := mNyS
+else if f_in(mAsiaS, mAsiaE)
+    stTxt := "ASIA SESSION · NO TRADE"
+    stEnd := mAsiaE
+
+// prochaine fenêtre
+string nxTxt = "Asia session"
+int    nxMs  = f_until(mAsiaS)
+f_nx(int ms0, string t0, int nyStart, string name, bool on) =>
+    int ms = f_until(nyStart)
+    int rm = ms0
+    string rt = t0
+    if on and ms < ms0
+        rm := ms
+        rt := name
+    [rm, rt]
+[nm1, nt1] = f_nx(nxMs, nxTxt, mFftS, "Frankfurt candle", true)
+[nm2, nt2] = f_nx(nm1, nt1, mKzS,  "London killzone", true)
+[nm3, nt3] = f_nx(nm2, nt2, mLdnS, "London session", true)
+[nm4, nt4] = f_nx(nm3, nt3, mNyLS, "NY liq. candle", true)
+[nm5, nt5] = f_nx(nm4, nt4, mNyS,  "New York session", true)
+[nm6, nt6] = f_nx(nm5, nt5, mNpS,  "NY PM session", nyPmOn)
+nxMs  := nm6
+nxTxt := nt6
+
+f_biasRows(table t) =>
+    string l60 = f_left("60")
+    f_cell(t, 0, 0, "BIAS", TK_TX, text.align_left, boxSz, TK_BG)
+    f_cell(t, 1, 0, "", TK_TX, text.align_center, boxSz, TK_BG)
+    f_cell(t, 2, 0, syminfo.ticker, TK_LB, text.align_right, boxSz, TK_BG)
+    f_cell(t, 0, 1, "TF", TK_LB, text.align_left, size.tiny, TK_BG)
+    f_cell(t, 1, 1, "BIAS", TK_LB, text.align_center, size.tiny, TK_BG)
+    f_cell(t, 2, 1, "MAJ DANS", TK_LB, text.align_right, size.tiny, TK_BG)
+    f_cell(t, 0, 2, "Daily", TK_LB, text.align_left, boxSz, TK_BG)
+    f_cell(t, 1, 2, biasTxt(dB), biasClr2(dB), text.align_center, boxSz, TK_BG)
+    f_cell(t, 2, 2, f_left("D"), TK_LB, text.align_right, boxSz, TK_BG)
+    f_cell(t, 0, 3, "4H", TK_LB, text.align_left, boxSz, TK_BG)
+    f_cell(t, 1, 3, biasTxt(h4B), biasClr2(h4B), text.align_center, boxSz, TK_BG)
+    f_cell(t, 2, 3, f_left("240"), TK_LB, text.align_right, boxSz, TK_BG)
+    f_cell(t, 0, 4, "1H", TK_LB, text.align_left, boxSz, TK_BG)
+    f_cell(t, 1, 4, biasTxt(h1B), biasClr2(h1B), text.align_center, boxSz, TK_BG)
+    f_cell(t, 2, 4, l60, TK_LB, text.align_right, boxSz, TK_BG)
+    color tbg = tradeB == 0 ? TK_BD : biasClr2(tradeB)
+    f_cell(t, 0, 5, "TRADE", TK_TX, text.align_left, boxSz, tbg)
+    f_cell(t, 1, 5, biasTxt(tradeB), TK_TX, text.align_center, boxSz, tbg)
+    f_cell(t, 2, 5, l60, TK_TX, text.align_right, boxSz, tbg)
+    int r = 6
+    if showSt
+        color stCol = stTrd ? buyCol : sellCol
+        color stBg  = color.new(stCol, 80)
+        f_cell(t, 0, 6, "NOW", stCol, text.align_left, boxSz, stBg)
+        f_cell(t, 1, 6, stTxt, stCol, text.align_center, boxSz, stBg)
+        f_cell(t, 2, 6, na(stEnd) ? "" : "fin dans " + f_fmt(f_until(stEnd)), stCol, text.align_right, boxSz, stBg)
+        f_cell(t, 0, 7, "NEXT", TK_LB, text.align_left, boxSz, TK_BG)
+        f_cell(t, 1, 7, nxTxt, TK_TX, text.align_center, boxSz, TK_BG)
+        f_cell(t, 2, 7, "dans " + f_fmt(nxMs), TK_LB, text.align_right, boxSz, TK_BG)
+        r := 8
+    r
+
+f_stTxt(int s) =>
+    s == 2 ? "PRÊT ▲ ACHAT" : s == 3 ? "PRÊT ▼ VENTE" : s == 1 ? "EN ATTENTE" : "—"
+f_stCol(int s) =>
+    s == 2 ? TV_GRN : s == 3 ? TV_RED : s == 1 ? TV_ORG : TK_LB
+f_sym(int s) =>
+    s == 1 ? "✓" : s == -1 ? "✕" : "·"
+f_symCol(int s) =>
+    s == 1 ? TV_GRN : s == -1 ? TV_RED : TK_LB
+
+// un bloc de setup : en-tête + état, conditions, dernier signal et score
+f_setRows(table t, int r0, Pnl P, string title, array<Trd> H) =>
+    int r = r0
+    int n = P.lb.size()
+    int ok = 0
+    if n > 0
+        for i = 0 to n - 1
+            ok += P.st.get(i) == 1 ? 1 : 0
+    string score = str.tostring(ok) + "/" + str.tostring(n)
+    color hb = #1E222D
+    f_cell(t, 0, r, title, TK_TX, text.align_left, tSz, hb)
+    f_cell(t, 1, r, tCompact ? score : "", TK_LB, text.align_right, tSz, hb)
+    f_cell(t, 2, r, f_stTxt(P.state), f_stCol(P.state), text.align_right, tSz, hb)
+    r += 1
+    if not tCompact
+        if n > 0
+            for i = 0 to n - 1
+                f_cell(t, 0, r, P.lb.get(i), TK_LB, text.align_left, tSz, TK_BG)
+                f_cell(t, 1, r, P.dt.get(i), TK_TX, text.align_right, tSz, TK_BG)
+                f_cell(t, 2, r, f_sym(P.st.get(i)), f_symCol(P.st.get(i)), text.align_center, tSz, TK_BG)
+                r += 1
+        Trd lt = H.size() > 0 ? H.last() : na
+        color lc = na(lt) ? TK_LB : lt.st == 1 ? TV_GRN : lt.st == 2 ? TV_RED : (lt.dir == 1 ? TV_GRN : TV_RED)
+        f_cell(t, 0, r, "Dernier", TK_LB, text.align_left, tSz, TK_BG)
+        f_cell(t, 1, r, f_lastTxt(H), lc, text.align_right, tSz, TK_BG)
+        f_cell(t, 2, r, score, TK_LB, text.align_center, tSz, TK_BG)
+        r += 1
+    r
+
+f_allSets(table t, int r0) =>
+    int r = r0
+    if tSet and cxOn
+        if s1On and tb1
+            r := f_setRows(t, r, P1, "S1 · Rejet FVG HTF", H1)
+        if s2On and tb2
+            r := f_setRows(t, r, P2, "S2 · Sweep + CISD", H2)
+        if s3On and tb3
+            r := f_setRows(t, r, P3, "S3 · A+ POI / FVG", H3)
+        if s4On and tb4
+            r := f_setRows(t, r, P4, "S4 · PO3 " + f_tfName(s4tf), H4)
+    r
+
+if barstate.islast
+    if not na(tb)
+        table.clear(tb, 0, 0, 2, 69)
+    if not na(ts)
+        table.clear(ts, 0, 0, 2, 59)
+    int r = 0
+    if showBias
+        r := f_biasRows(tb)
+    if samePos
+        f_allSets(tb, r)
+    else if not na(ts)
+        f_allSets(ts, 0)
+
+// =====================================================================================
+//  ALERTES : une alerte « Any alert() function call », un message par bougie (clôture)
+// =====================================================================================
+f_edge(string s) =>
+    bool w = inS(s)
+    [w and not w[1], not w and w[1]]
+
+[asO, asC] = f_edge(sAsia)
+[l1O, l1C] = f_edge(sLiq1)
+[kzO, kzC] = f_edge(sLdnKZ)
+[ltO, ltC] = f_edge(sLdnTT)
+[l2O, l2C] = f_edge(sLiq2)
+[nyO, nyC] = f_edge(sNyTT)
+[npO, npC] = f_edge(sNyPM)
+
+f_add(string m, bool c, string t) =>
+    c ? (m == "" ? t : m + " · " + t) : m
+
+string msg = ""
+msg := f_add(msg, alAsia and asO, "Asie ouverte")
+msg := f_add(msg, alAsia and asC, "Asie fermée")
+msg := f_add(msg, alLiq and l1O, "Bougie de liquidité Frankfurt ouverte")
+msg := f_add(msg, alLiq and l1C, "Bougie de liquidité Frankfurt fermée")
+msg := f_add(msg, alLdn and kzO, "Killzone de Londres ouverte")
+msg := f_add(msg, alLdn and ltO, "Temps de trading Londres ouvert")
+msg := f_add(msg, alLdn and kzC, "Killzone fermée, séance de Londres ouverte")
+msg := f_add(msg, alLdn and ltC, "Temps de trading Londres fermé")
+msg := f_add(msg, alLiq and l2O, "Bougie de liquidité NY ouverte (pas de trade)")
+msg := f_add(msg, alLiq and l2C, "Bougie de liquidité NY fermée")
+msg := f_add(msg, alNy and nyO, "Séance et temps de trading New York ouverts")
+msg := f_add(msg, alNy and nyC, "Temps de trading New York fermé")
+msg := f_add(msg, alWin and nyPmOn and npO, "NY PM ouverte")
+msg := f_add(msg, alWin and nyPmOn and npC, "NY PM fermée")
+msg := f_add(msg, alBias and barstate.isconfirmed and tradeB != tradeB[1], "Biais TRADE : " + biasTxt(tradeB))
+if alLvl and evP.size() > 0
+    for i = 0 to evP.size() - 1
+        msg := f_add(msg, true, evN.get(i) + " balayé " + f_px(evP.get(i)))
+
+// setups EN ATTENTE (passage à l'état)
+var int ps1 = 0
+var int ps2 = 0
+var int ps3 = 0
+var int ps4 = 0
+if pnlNow
+    msg := f_add(msg, alPend and P1.state == 1 and ps1 != 1, "S1 EN ATTENTE")
+    msg := f_add(msg, alPend and P2.state == 1 and ps2 != 1, "S2 EN ATTENTE")
+    msg := f_add(msg, alPend and P3.state == 1 and ps3 != 1, "S3 EN ATTENTE")
+    msg := f_add(msg, alPend and P4.state == 1 and ps4 != 1, "S4 EN ATTENTE")
+    ps1 := P1.state
+    ps2 := P2.state
+    ps3 := P3.state
+    ps4 := P4.state
+
+if alQ.size() > 0
+    for m in alQ
+        msg := f_add(msg, true, m)
+
+if timeframe.isintraday and msg != ""
+    alert("CX Setups " + syminfo.ticker + " " + tfStr + " : " + msg, alert.freq_once_per_bar_close)
+
+alertcondition(s1Sig, "CX Setups · S1", "CX Setups {{ticker}} : signal S1 (rejet FVG HTF)")
+alertcondition(s2Sig, "CX Setups · S2", "CX Setups {{ticker}} : signal S2 (sweep + CISD)")
+alertcondition(s3Sig, "CX Setups · S3", "CX Setups {{ticker}} : signal S3 (A+ POI / FVG)")
+alertcondition(s4Sig, "CX Setups · S4", "CX Setups {{ticker}} : signal S4 (PO3)")

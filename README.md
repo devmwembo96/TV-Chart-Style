@@ -15,6 +15,7 @@ Indicateurs TradingView réécrits en MQL5, avec le même calcul et le même ren
 | `Indicators/CX_Flow.mq5` | Recréation (code fermé) : biais directionnel, sweep, OB/BB, MSS, signal et checklist |
 | `Indicators/CX_P2P.mq5` | Recréation (code fermé) : niveaux Asie / Londres / PDH / PDL / TDO, inversion de FVG, MSS, cibles Fibonacci |
 | `Indicators/CX_RangeBreaker.mq5` | Recréation (code fermé) : compression, cassures et retournements de mèche |
+| `Pine/CX_Setups.pine` | TradingView (Pine v6) : séances et liquidité ISLB, sweeps, premium / discount, biais, POI, FVG HTF, 4 setups avec tableaux, entrée / SL / TP |
 
 ## Installation
 
