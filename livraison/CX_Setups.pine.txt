@@ -26,24 +26,30 @@ indicator("CX Setups", shorttitle = "CX Setups", overlay = true, max_boxes_count
 // =====================================================================================
 
 G0 = "Affichage"
-preset    = input.string("Épuré", "Préréglage d'affichage", options = ["Épuré", "Complet", "Personnalisé"], group = G0, tooltip = "Épuré : FVG HTF, signaux et tableaux ; sans projections PO3 ni bougies HTF.\nComplet : tout.\nPersonnalisé : les interrupteurs de chaque groupe.")
+preset    = input.string("Épuré", "Préréglage d'affichage", options = ["Épuré", "Complet", "Personnalisé"], group = G0, tooltip = "Épuré : FVG HTF, signaux, PO3 et tableaux ; sans projections PO3.\nComplet : tout.\nPersonnalisé : les interrupteurs de chaque groupe.")
 startDate = input.time(timestamp("01 Jan 2026 00:00 +0000"), "Afficher à partir du", group = G0)
 maxTF     = input.int(60, "Unité maximale des setups (minutes)", minval = 1, maxval = 1440, group = G0)
 
-G1 = "Séances (comme CX Liquidity)"
-season    = input.string("Auto", "Saison", options = ["Auto", "Summer", "Winter", "Manual (NY)"], group = G1, tooltip = "Auto : hiver tant que Londres est à l'heure GMT. Été (NY) : Londres 02:00 – 05:00, New York 08:00 – 12:00. Hiver (NY) : Londres 02:00 – 06:00, New York 07:00 – 10:00.")
-nyPmOn    = input.bool(false, "Séance NY PM (13:00 – 16:00 NY)", group = G1)
-nyPmTrd   = input.bool(true, "NY PM compte comme temps de trading", group = G1)
-
-GM = "Heures manuelles (New York) · Saison = Manual (NY)"
-manAs  = input.session("1800-0100", "Asie (or)", group = GM)
-manFft = input.session("0100-0200", "Bougie de liquidité Frankfurt", group = GM)
-manKz  = input.session("0200-0300", "Killzone de Londres", group = GM)
-manLdS = input.session("0300-0600", "Séance de Londres", group = GM)
-manLdT = input.session("0200-0600", "Temps de trading Londres", group = GM)
-manNyL = input.session("0600-0700", "Bougie de liquidité NY", group = GM)
-manNyT = input.session("0700-1000", "Temps de trading New York", group = GM)
-manNyP = input.session("1300-1600", "NY PM", group = GM)
+G1 = "Séances (chacune dans le fuseau de sa place financière)"
+myTz   = input.string("Africa/Lubumbashi", "Ton fuseau horaire (heures affichées)", group = G1, tooltip = "Nom IANA, par exemple Africa/Lubumbashi, Europe/Paris, America/New_York. Toutes les heures des tableaux, étiquettes et alertes sont écrites dans ce fuseau.")
+iAs    = input.session("1800-0100", "Asie (or)", group = G1, inline = "as")
+zAs    = input.string("America/New_York", "", group = G1, inline = "as")
+iFft   = input.session("0600-0700", "Bougie Frankfurt", group = G1, inline = "ff")
+zFft   = input.string("Europe/London", "", group = G1, inline = "ff")
+iKz    = input.session("0700-0800", "Killzone Londres", group = G1, inline = "kz")
+zKz    = input.string("Europe/London", "", group = G1, inline = "kz")
+iLdS   = input.session("0800-1100", "Séance de Londres", group = G1, inline = "ls")
+zLdS   = input.string("Europe/London", "", group = G1, inline = "ls")
+iLdT   = input.session("0700-1100", "Trading Londres", group = G1, inline = "lt")
+zLdT   = input.string("Europe/London", "", group = G1, inline = "lt")
+iNyL   = input.session("0700-0800", "Bougie de liquidité NY", group = G1, inline = "nl")
+zNyL   = input.string("America/New_York", "", group = G1, inline = "nl")
+iNyT   = input.session("0800-1200", "Trading NY (NY AM)", group = G1, inline = "nt")
+zNyT   = input.string("America/New_York", "", group = G1, inline = "nt")
+iNyP   = input.session("1300-1600", "NY PM", group = G1, inline = "np")
+zNyP   = input.string("America/New_York", "", group = G1, inline = "np")
+nyPmOn  = input.bool(false, "Utiliser NY PM (niveaux, statut)", group = G1)
+nyPmTrd = input.bool(true, "NY PM compte comme temps de trading", group = G1)
 
 G6 = "Liquidité utilisée (S2, S3, TP)"
 uAsia  = input.bool(true, "Asie", group = G6, inline = "a")
@@ -164,15 +170,20 @@ s4BuCol  = input.color(#089981, "Ligne CISD achat", group = GS4, inline = "l1")
 s4BeCol  = input.color(#F23645, "vente", group = GS4, inline = "l1")
 s4Sty    = input.string("Plein", "", options = ["Plein", "Tirets", "Pointillés"], group = GS4, inline = "l2")
 s4W      = input.int(1, "épaisseur", minval = 1, maxval = 4, group = GS4, inline = "l2")
-s4C2Lb   = input.bool(true, "Étiquette C2", group = GS4)
+s4C2Lb   = input.bool(true, "Étiquettes c2 et ±CISD", group = GS4)
+s4Trace  = input.bool(true, "Trace de l'ouverture HTF (HTF open trace)", group = GS4, inline = "tr")
+s4TrCol  = input.color(color.new(#787B86, 20), "", group = GS4, inline = "tr")
+s4Info   = input.bool(true, "Tableau PO3 Model", group = GS4, inline = "in")
+s4InfoSt = input.string("CantoLab", "", options = ["CantoLab", "Ticket"], group = GS4, inline = "in")
+s4InfoPo = input.string("Top center", "", options = ["Top right", "Top center", "Top left", "Bottom center", "Middle right"], group = GS4, inline = "in", tooltip = "Top right est pris par le tableau BIAS de CX Liquidity : Top center par défaut.")
 s4ProjI  = input.bool(true, "Projections (préréglage Personnalisé)", group = GS4, inline = "pj")
 s4PjCol  = input.color(color.new(#787B86, 30), "", group = GS4, inline = "pj")
-s4CdlI   = input.bool(true, "Bougies HTF à droite (préréglage Personnalisé)", group = GS4)
+s4CdlI   = input.bool(true, "Bougies HTF à droite du prix", group = GS4)
 s4CdlN   = input.int(3, "Nombre de bougies HTF", minval = 1, maxval = 3, group = GS4)
 s4CdlOff = input.int(10, "Décalage (bougies)", minval = 2, maxval = 100, group = GS4)
-s4Up     = input.color(#089981, "Corps haussier", group = GS4, inline = "cu")
-s4Dn     = input.color(#F23645, "baissier", group = GS4, inline = "cu")
-s4Wk     = input.color(#787B86, "Mèche / bord", group = GS4, inline = "cw")
+s4Up     = input.color(#4CAF50, "Corps haussier", group = GS4, inline = "cu")
+s4Dn     = input.color(#000000, "baissier", group = GS4, inline = "cu")
+s4Wk     = input.color(#000000, "Mèche / bord", group = GS4, inline = "cw")
 s4Opens  = input.bool(false, "Traits verticaux d'ouverture HTF", group = GS4, inline = "op")
 s4OpCol  = input.color(color.new(#787B86, 80), "", group = GS4, inline = "op")
 s4Bias   = input.bool(false, "Filtre biais TRADE", group = GS4, inline = "f")
@@ -209,33 +220,33 @@ color TV_ORG  = #FF9800
 bool isFull  = preset == "Complet"
 bool isClean = preset == "Épuré"
 bool pjShow  = isFull or (not isClean and s4ProjI)
-bool cdlShow = isFull or (not isClean and s4CdlI)
+bool cdlShow = s4CdlI
 
 f_sty(string s) =>
     s == "Plein" ? line.style_solid : s == "Tirets" ? line.style_dashed : line.style_dotted
 
-// ─────────────────────────── Séances (ISLB, version légère) ───────────────────────────
-bool   ukWinter = hour(time, "Europe/London") == hour(time, "UTC")
-bool   isMan  = season == "Manual (NY)"
-bool   isWin  = not isMan and (season == "Winter" or (season == "Auto" and ukWinter))
-bool   isAuto = season == "Auto" and not isWin
+// ─────────────────────────── Fenêtres de séance ───────────────────────────
+// Chaque fenêtre est écrite « HHMM-HHMM|fuseau » : elle suit l'heure de sa place
+// (Londres, New York), changements d'heure compris.
 bool   isGold = str.contains(syminfo.ticker, "XAU") or str.contains(syminfo.ticker, "GOLD")
 float  sprTol = sprIn > 0 ? sprIn : isGold ? 0.30 : syminfo.mintick * 10
-string tz     = isMan ? "America/New_York" : isWin ? "Asia/Kolkata" : isAuto ? "America/New_York" : "UTC"
-string sAsia  = isMan ? manAs : isWin ? (isGold ? "0430-1130" : "0330-1030") : isAuto ? "1700-0015" : "2100-0415"
-string sLiq1  = isMan ? manFft : isWin ? "1130-1230" : isAuto ? "0100-0200" : "0500-0600"
-string sLiq2  = isMan ? manNyL : isWin ? "1630-1730" : isAuto ? "0700-0800" : "1100-1200"
-string sLdnKZ = isMan ? manKz  : isWin ? "1230-1330" : isAuto ? "0200-0300" : "0600-0700"
-string sLdnTT = isMan ? manLdT : isWin ? "1230-1630" : isAuto ? "0200-0500" : "0600-0900"
-string sLdnS  = isMan ? manLdS : isWin ? "1330-1630" : isAuto ? "0300-0500" : "0700-0900"
-string sNyTT  = isMan ? manNyT : isWin ? "1730-2030" : isAuto ? "0800-1200" : "1200-1600"
-string sNyPM  = isMan ? manNyP : isWin ? "2330-0230" : isAuto ? "1300-1600" : "1700-2000"
+string sAsia  = iAs + "|" + zAs
+string sLiq1  = iFft + "|" + zFft
+string sLdnKZ = iKz + "|" + zKz
+string sLdnS  = iLdS + "|" + zLdS
+string sLdnTT = iLdT + "|" + zLdT
+string sLiq2  = iNyL + "|" + zNyL
+string sNyTT  = iNyT + "|" + zNyT
+string sNyPM  = iNyP + "|" + zNyP
 
 bool canShow = timeframe.isintraday and timeframe.in_seconds() <= maxTF * 60 and time >= startDate
-bool cxOn    = canShow
 
+bool cxOn    = canShow
+f_sz(string s) =>
+    array<string> p = str.split(s, "|")
+    p.size() > 1 ? p.get(1) : "America/New_York"
 inS(string s) =>
-    not na(time(timeframe.period, s, tz))
+    not na(time(timeframe.period, str.substring(s, 0, 9), f_sz(s)))
 
 bool inLdT   = inS(sLdnTT)
 bool inNyT   = inS(sNyTT)
@@ -872,7 +883,7 @@ f_trd(array<Trd> H, int s, int dir, float en, float sl, float tp, float rr, stri
     tr.lS := line.new(bar_index, sl, x2, sl, color = slCol, width = trW)
     tr.lT := line.new(bar_index, tp, x2, tp, color = tpCol, width = trW)
     tr.lb := label.new(x2, en, tr.txt, style = label.style_label_left, color = color(na), textcolor = dir == 1 ? arBuy : arSell, size = trTxtSz)
-    tr.ar := label.new(bar_index, dir == 1 ? low : high, "", yloc = dir == 1 ? yloc.belowbar : yloc.abovebar, style = dir == 1 ? label.style_triangleup : label.style_triangledown, color = dir == 1 ? arBuy : arSell, size = arSz)
+    tr.ar := label.new(bar_index, dir == 1 ? low : high, dir == 1 ? "▲" : "▼", yloc = dir == 1 ? yloc.belowbar : yloc.abovebar, style = label.style_none, color = color(na), textcolor = dir == 1 ? arBuy : arSell, size = arSz)
     if not na(cy) and not na(cx1)
         tr.lc := line.new(cx1, cy, bar_index, cy, color = cc, style = f_sty(cs), width = cw)
     H.push(tr)
@@ -916,7 +927,7 @@ f_lastTxt(array<Trd> H) =>
     string r = "—"
     if H.size() > 0
         Trd tr = H.last()
-        r := (tr.dir == 1 ? "BUY " : "SELL ") + str.format_time(tr.tm, "HH:mm") + (tr.st == 1 ? " ✓ TP" : tr.st == 2 ? " ✕ SL" : " · en cours")
+        r := (tr.dir == 1 ? "BUY " : "SELL ") + str.format_time(tr.tm, "HH:mm", myTz) + (tr.st == 1 ? " ✓ TP" : tr.st == 2 ? " ✕ SL" : " · en cours")
     r
 
 // checklist d'un setup
@@ -1364,7 +1375,9 @@ var int   c2HB = na
 var int   c2LB = na
 var bool  s4FB = false
 var bool  s4FS = false
+var int   c2B  = na
 if s4New or na(c2O)
+    c2B  := bar_index
     c2O  := open
     c2H  := high
     c2L  := low
@@ -1395,6 +1408,7 @@ if barstate.isfirst
 
 var array<line>  s4PjL = array.new<line>()
 var array<label> s4PjT = array.new<label>()
+var array<label> s4Lbs = array.new<label>()
 
 f_s4Ext(int dir, int eb) =>
     int off = bar_index - eb
@@ -1446,7 +1460,11 @@ if barstate.isconfirmed and cxOn and s4On and s4Ok and not na(c1H)
                     s4PjT.clear()
                     color cc = d == 1 ? s4BuCol : s4BeCol
                     if s4C2Lb
-                        s4PjT.push(label.new(lb, lvl, "C2", style = d == -1 ? label.style_label_up : label.style_label_down, color = color(na), textcolor = cc, size = size.tiny))
+                        // « c2 » au-dessus (vente) / au-dessous (achat) du point du balayage, « ±CISD » à droite de la ligne
+                        s4Lbs.push(label.new(eb, d == -1 ? c2H : c2L, "c2", style = d == -1 ? label.style_label_down : label.style_label_up, color = color(na), textcolor = s4Wk == #000000 ? #787B86 : s4Wk, size = size.tiny))
+                        s4Lbs.push(label.new(bar_index, lvl, d == -1 ? "-CISD" : "+CISD", style = label.style_label_left, color = color(na), textcolor = cc, size = size.tiny))
+                        while s4Lbs.size() > 2 * histN
+                            label.delete(s4Lbs.shift())
                     if pjShow and pjLv.size() > 0
                         for n in pjLv
                             float y = lvl + n * (ext - lvl)
@@ -1522,6 +1540,32 @@ if barstate.islast
     else if not na(cdT)
         label.delete(cdT)
         cdT := na
+
+// trace de l'ouverture de la bougie HTF en cours : du début de C2 à la bougie HTF dessinée
+var line s4Tr = na
+if barstate.islast
+    bool onT = s4Trace and s4On and s4Ok and canShow and not na(c2B)
+    int  xe  = cdlShow ? bar_index + s4CdlOff + (s4CdlN - 1) * 4 : bar_index
+    if onT and na(s4Tr)
+        s4Tr := line.new(c2B, c2O, xe, c2O, color = s4TrCol, style = line.style_solid, width = 1)
+    else if onT
+        line.set_xy1(s4Tr, c2B, c2O)
+        line.set_xy2(s4Tr, xe, c2O)
+    else if not na(s4Tr)
+        line.delete(s4Tr)
+        s4Tr := na
+
+// tableau « PO3 Model » (CantoLab : fond blanc, bord et texte noirs ; ou style ticket)
+f_tfShort(int sec) =>
+    sec < 3600 ? str.tostring(int(sec / 60)) + "m" : sec < 86400 ? str.tostring(int(sec / 3600)) + "h" : sec < 604800 ? str.tostring(int(sec / 86400)) + "D" : sec < 2419200 ? "1W" : "1M"
+bool s4Ck = s4InfoSt == "CantoLab"
+var table s4T = s4Info and s4On ? table.new(s4InfoPo == "Top right" ? position.top_right : s4InfoPo == "Top left" ? position.top_left : s4InfoPo == "Bottom center" ? position.bottom_center : s4InfoPo == "Middle right" ? position.middle_right : position.top_center, 1, 4, bgcolor = s4Ck ? color.white : TK_BG, frame_color = s4Ck ? color.black : TK_BD, frame_width = 1) : na
+if barstate.islast and not na(s4T)
+    color tc = s4Ck ? color.black : TK_TX
+    table.cell(s4T, 0, 0, "PO3 Model", text_color = tc, text_size = size.small)
+    table.cell(s4T, 0, 1, "Alignment : " + f_tfShort(tfSec) + "-" + f_tfShort(timeframe.in_seconds(s4tf)), text_color = tc, text_size = size.tiny, text_halign = text.align_left)
+    table.cell(s4T, 0, 2, "Bias : " + (s4BiasM == "Haussier" ? "Bullish" : s4BiasM == "Baissier" ? "Bearish" : "Neutral"), text_color = tc, text_size = size.tiny, text_halign = text.align_left)
+    table.cell(s4T, 0, 3, syminfo.ticker + " | " + str.format_time(timenow, "dd MMM yyyy", myTz), text_color = tc, text_size = size.tiny, text_halign = text.align_left)
 
 // =====================================================================================
 //  TABLEAUX : un bloc par setup (style ticket), en bas à droite par défaut

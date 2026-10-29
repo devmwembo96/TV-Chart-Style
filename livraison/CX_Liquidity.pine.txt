@@ -32,20 +32,26 @@ preset    = input.string("Épuré", "Préréglage d'affichage", options = ["Épu
 startDate = input.time(timestamp("01 Jan 2026 00:00 +0000"), "Afficher à partir du", group = G0, tooltip = "Rien n'est dessiné avant cette date.")
 maxTF     = input.int(60, "Unité maximale pour les séances et POI (minutes)", minval = 1, maxval = 1440, group = G0, tooltip = "Au-dessus, seuls les niveaux et le biais sont affichés (comme ISLB).")
 
-G1 = "Séances"
-season    = input.string("Auto", "Saison", options = ["Auto", "Summer", "Winter", "Manual (NY)"], group = G1, tooltip = "Auto : hiver tant que Londres est à l'heure GMT (dernier dimanche d'octobre au dernier dimanche de mars), sinon été.\nÉté (heure NY) : Asie 17:00 – 00:15, Frankfurt 01:00, killzone 02:00, Londres 03:00 – 05:00, bougie NY 07:00, New York 08:00 – 12:00.\nHiver (heure NY) : Asie 18:00 – 01:00, Frankfurt 01:00, killzone 02:00, Londres 03:00 – 06:00, bougie NY 06:00, New York 07:00 – 10:00.\nManual (NY) : les heures du groupe suivant, en heure de New York.")
-nyPmOn    = input.bool(false, "Séance NY PM (13:00 – 16:00 NY)", group = G1)
-nyPmTrd   = input.bool(true, "NY PM compte comme temps de trading", group = G1)
-
-GM = "Heures manuelles (New York) · Saison = Manual (NY)"
-manAs  = input.session("1800-0100", "Asie (or)", group = GM)
-manFft = input.session("0100-0200", "Bougie de liquidité Frankfurt", group = GM)
-manKz  = input.session("0200-0300", "Killzone de Londres", group = GM)
-manLdS = input.session("0300-0600", "Séance de Londres", group = GM)
-manLdT = input.session("0200-0600", "Temps de trading Londres", group = GM)
-manNyL = input.session("0600-0700", "Bougie de liquidité NY", group = GM)
-manNyT = input.session("0700-1000", "Temps de trading New York", group = GM)
-manNyP = input.session("1300-1600", "NY PM", group = GM)
+G1 = "Séances (chacune dans le fuseau de sa place financière)"
+myTz   = input.string("Africa/Lubumbashi", "Ton fuseau horaire (heures affichées)", group = G1, tooltip = "Nom IANA, par exemple Africa/Lubumbashi, Europe/Paris, America/New_York. Toutes les heures des tableaux, étiquettes et alertes sont écrites dans ce fuseau.")
+iAs    = input.session("1800-0100", "Asie (or)", group = G1, inline = "as")
+zAs    = input.string("America/New_York", "", group = G1, inline = "as")
+iFft   = input.session("0600-0700", "Bougie Frankfurt", group = G1, inline = "ff")
+zFft   = input.string("Europe/London", "", group = G1, inline = "ff")
+iKz    = input.session("0700-0800", "Killzone Londres", group = G1, inline = "kz")
+zKz    = input.string("Europe/London", "", group = G1, inline = "kz")
+iLdS   = input.session("0800-1100", "Séance de Londres", group = G1, inline = "ls")
+zLdS   = input.string("Europe/London", "", group = G1, inline = "ls")
+iLdT   = input.session("0700-1100", "Trading Londres", group = G1, inline = "lt")
+zLdT   = input.string("Europe/London", "", group = G1, inline = "lt")
+iNyL   = input.session("0700-0800", "Bougie de liquidité NY", group = G1, inline = "nl")
+zNyL   = input.string("America/New_York", "", group = G1, inline = "nl")
+iNyT   = input.session("0800-1200", "Trading NY (NY AM)", group = G1, inline = "nt")
+zNyT   = input.string("America/New_York", "", group = G1, inline = "nt")
+iNyP   = input.session("1300-1600", "NY PM", group = G1, inline = "np")
+zNyP   = input.string("America/New_York", "", group = G1, inline = "np")
+nyPmOn  = input.bool(false, "Utiliser NY PM (niveaux, statut)", group = G1)
+nyPmTrd = input.bool(true, "NY PM compte comme temps de trading", group = G1)
 
 G2 = "Range d'Asie"
 showBox = input.bool(true, "Afficher le range d'Asie", group = G2)
@@ -120,6 +126,26 @@ swpML  = input.int(5, "Longueur de la marge (bougies)", minval = 2, maxval = 10,
 swpHF  = input.bool(false, "Masquer les faux sweeps", group = GSW, inline = "f")
 swpFC  = input.color(color.new(#787B86, 73), "", group = GSW, inline = "f")
 
+GLX = "Séances LuxAlgo (cadres et tableau)"
+lxAsOn = input.bool(true, "Asie", group = GLX, inline = "a")
+lxAsC  = input.color(color.yellow, "", group = GLX, inline = "a")
+lxLdOn = input.bool(true, "Londres", group = GLX, inline = "a")
+lxLdC  = input.color(color.blue, "", group = GLX, inline = "a")
+lxNaOn = input.bool(true, "NY AM", group = GLX, inline = "b")
+lxNaC  = input.color(color.orange, "", group = GLX, inline = "b")
+lxNpOn = input.bool(true, "NY PM", group = GLX, inline = "b")
+lxNpC  = input.color(color.red, "", group = GLX, inline = "b")
+lxMM   = input.bool(true, "Prolonger : Max/Min", group = GLX, inline = "m")
+lxMid  = input.bool(false, "Mid", group = GLX, inline = "m")
+lxFill = input.bool(true, "Remplissage", group = GLX, inline = "m")
+sesDET = input.bool(true, "Lignes extrêmes", group = GLX, inline = "n")
+sesNM  = input.bool(true, "Noms", group = GLX, inline = "n")
+sesLNW = input.int(1, "Épaisseur des lignes", minval = 1, maxval = 4, group = GLX)
+sesFT  = input.int(95, "Transparence du remplissage", minval = 0, maxval = 100, group = GLX)
+sesTSH = input.bool(true, "Sessions Tabular View", group = GLX)
+sesTS  = input.string("Small", "Taille du texte", options = ["Tiny", "Small", "Normal"], group = GLX, inline = "t")
+sesPOS = input.string("Bottom Left", "", options = ["Top Left", "Top Center", "Top Right", "Middle Right", "Bottom Left", "Bottom Center"], group = GLX, inline = "t", tooltip = "Top Right est pris par le tableau BIAS ; Bottom Left par défaut.")
+
 G7 = "POI et type d'entrée (ISLB)"
 showPoi  = input.bool(true, "Afficher les POI du setup en cours", group = G7, tooltip = "OB et FVG des unités 1H, 4H et Daily, du côté du biais TRADE seulement. Le plus proche par unité.")
 p1H      = input.bool(true, "1H", group = G7, inline = "tf")
@@ -186,35 +212,27 @@ bool shTaken = isFull or (not isClean and shTkI)
 f_sty(string s) =>
     s == "Plein" ? line.style_solid : s == "Tirets" ? line.style_dashed : line.style_dotted
 
-// ─────────────────────────── Session times ───────────────────────────
-// Summer: New York clock (Auto) or fixed UTC times (Summer forced).
-// Winter: IST times directly (Asia/Kolkata clock). Manual: New York clock.
-bool   ukWinter = hour(time, "Europe/London") == hour(time, "UTC")
-bool   isMan  = season == "Manual (NY)"
-bool   isWin  = not isMan and (season == "Winter" or (season == "Auto" and ukWinter))
-bool   isAuto = season == "Auto" and not isWin
+// ─────────────────────────── Fenêtres de séance ───────────────────────────
+// Chaque fenêtre est écrite « HHMM-HHMM|fuseau » : elle suit l'heure de sa place
+// (Londres, New York), changements d'heure compris.
 bool   isGold = str.contains(syminfo.ticker, "XAU") or str.contains(syminfo.ticker, "GOLD")
 float  sprTol = sprIn > 0 ? sprIn : isGold ? 0.30 : syminfo.mintick * 10
-string tz     = isMan ? "America/New_York" : isWin ? "Asia/Kolkata" : isAuto ? "America/New_York" : "UTC"
-string sAsia  = isMan ? manAs : isWin ? (isGold ? "0430-1130" : "0330-1030") : isAuto ? "1700-0015" : "2100-0415"
-string sLiq1  = isMan ? manFft : isWin ? "1130-1230" : isAuto ? "0100-0200" : "0500-0600"
-string sLiq2  = isMan ? manNyL : isWin ? "1630-1730" : isAuto ? "0700-0800" : "1100-1200"
-string sLdnKZ = isMan ? manKz  : isWin ? "1230-1330" : isAuto ? "0200-0300" : "0600-0700"
-string sLdnTT = isMan ? manLdT : isWin ? "1230-1630" : isAuto ? "0200-0500" : "0600-0900"
-string sLdnS  = isMan ? manLdS : isWin ? "1330-1630" : isAuto ? "0300-0500" : "0700-0900"
-string sNyTT  = isMan ? manNyT : isWin ? "1730-2030" : isAuto ? "0800-1200" : "1200-1600"
-string sNyPM  = isMan ? manNyP : isWin ? "2330-0230" : isAuto ? "1300-1600" : "1700-2000"
-
-// Season for the live clock (session status, countdowns, early warnings): decided by
-// the current time, not the last candle (at the weekend the last candle is Friday's).
-bool   isWinN  = not isMan and (season == "Winter" or (season == "Auto" and hour(timenow, "Europe/London") == hour(timenow, "UTC")))
-bool   isAutoN = season == "Auto" and not isWinN
-string tzN     = isMan ? "America/New_York" : isWinN ? "Asia/Kolkata" : isAutoN ? "America/New_York" : "UTC"
+string sAsia  = iAs + "|" + zAs
+string sLiq1  = iFft + "|" + zFft
+string sLdnKZ = iKz + "|" + zKz
+string sLdnS  = iLdS + "|" + zLdS
+string sLdnTT = iLdT + "|" + zLdT
+string sLiq2  = iNyL + "|" + zNyL
+string sNyTT  = iNyT + "|" + zNyT
+string sNyPM  = iNyP + "|" + zNyP
 
 bool canShow = timeframe.isintraday and timeframe.in_seconds() <= maxTF * 60 and time >= startDate
 
+f_sz(string s) =>
+    array<string> p = str.split(s, "|")
+    p.size() > 1 ? p.get(1) : "America/New_York"
 inS(string s) =>
-    not na(time(timeframe.period, s, tz))
+    not na(time(timeframe.period, str.substring(s, 0, 9), f_sz(s)))
 
 // ─────────────────────────── Asia range box ───────────────────────────
 bool inAsia = inS(sAsia)
@@ -1678,66 +1696,24 @@ f_cell(table t, int c, int r, string tx, color tc, string al, string sz, color b
 
 var table tb = showBias ? table.new(f_pos(biasPos), 3, 8, bgcolor = TK_BG, frame_color = TK_BD, frame_width = 1, border_color = color.new(TK_BD, 60), border_width = 1) : na
 
-// ─────────────────────────── Early warnings / session status (ISLB) ───────────────────────────
-int tzOff = isMan or isWinN or isAutoN ? 0 : 240
+// ─────────────────────────── Statut, prochaine fenêtre, pré-alertes ───────────────────────────
+// Chaque fenêtre est lue dans son propre fuseau ; les heures affichées sont dans myTz.
 f_hm(string sx, int part) =>
     int k = part == 0 ? 0 : 5
     int(str.tonumber(str.substring(sx, k, k + 2))) * 60 + int(str.tonumber(str.substring(sx, k + 2, k + 4)))
-int mAsiaS = isMan ? f_hm(manAs, 0) : isWinN ? (isGold ? 270 : 210) : 1020
-int mAsiaE = isMan ? f_hm(manAs, 1) : isWinN ? (isGold ? 690 : 630) : 15
-int mFftS  = isMan ? f_hm(manFft, 0) : isWinN ? 690  : 60
-int mKzS   = isMan ? f_hm(manKz, 0) : isWinN ? 750  : 120
-int mLdnS  = isMan ? f_hm(manLdS, 0) : isWinN ? 810  : 180
-int mLdnE  = isMan ? f_hm(manLdT, 1) : isWinN ? 990  : 300
-int mNyLS  = isMan ? f_hm(manNyL, 0) : isWinN ? 990  : 420
-int mNyS   = isMan ? f_hm(manNyT, 0) : isWinN ? 1050 : 480
-int mNyE   = isMan ? f_hm(manNyT, 1) : isWinN ? 1230 : 720
-int mNpS   = isMan ? f_hm(manNyP, 0) : isWinN ? 1410 : 780
-int mNpE   = isMan ? f_hm(manNyP, 1) : isWinN ? 150  : 960
-var array<int> warned = array.new<int>()
-
-f_evT(int nyMin) =>
-    int m = (nyMin + tzOff) % 1440
-    int t = timestamp(tzN, year(timenow, tzN), month(timenow, tzN), dayofmonth(timenow, tzN), int(m / 60), m % 60)
-    t < timenow ? t + 86400000 : t
-
-f_pre(string msgIn, bool on, int nyMin, string name) =>
-    string r = msgIn
-    if on and alPre and barstate.isrealtime
-        int t = f_evT(nyMin)
-        if timenow >= t - preMin * 60000 and not warned.includes(t)
-            warned.push(t)
-            if warned.size() > 50
-                warned.shift()
-            string txt = name + " à " + str.format_time(t, "HH:mm", "America/New_York") + " NY"
-            r := r == "" ? txt : r + " · " + txt
-    r
-
-string pre = ""
-pre := f_pre(pre, true, mAsiaS, "Asie ouvre")
-pre := f_pre(pre, true, mAsiaE, "Asie ferme")
-pre := f_pre(pre, true, mFftS,  "Bougie Frankfurt")
-pre := f_pre(pre, true, mKzS,   "Killzone et temps de trading Londres")
-pre := f_pre(pre, true, mLdnS,  "Séance de Londres")
-pre := f_pre(pre, true, mLdnE,  "Fin du temps de trading Londres")
-pre := f_pre(pre, true, mNyLS,  "Bougie de liquidité NY")
-pre := f_pre(pre, true, mNyS,   "Séance et temps de trading New York")
-pre := f_pre(pre, true, mNyE,   "Fin du temps de trading New York")
-pre := f_pre(pre, nyPmOn, mNpS, "NY PM")
-if pre != ""
-    alert("CX Setups " + syminfo.ticker + " : dans " + str.tostring(preMin) + " min : " + pre, alert.freq_all)
-
-f_m(int nyMin) =>
-    (nyMin + tzOff) % 1440
-int nowMin = hour(timenow, tzN) * 60 + minute(timenow, tzN)
-int nowSec = second(timenow, tzN)
-f_in(int a, int b) =>
-    int st = f_m(a)
-    int en = f_m(b)
-    st < en ? nowMin >= st and nowMin < en : nowMin >= st or nowMin < en
-f_until(int nyMin) =>
-    int d = (f_m(nyMin) - nowMin + 1440) % 1440
-    (d == 0 ? 1440 : d) * 60000 - nowSec * 1000
+// fenêtre ouverte maintenant
+f_nowIn(string s) =>
+    string z = f_sz(s)
+    int m  = hour(timenow, z) * 60 + minute(timenow, z)
+    int st = f_hm(s, 0)
+    int en = f_hm(s, 1)
+    st < en ? m >= st and m < en : m >= st or m < en
+// millisecondes jusqu'au début (part 0) ou à la fin (part 1) de la fenêtre
+f_msTo(string s, int part) =>
+    string z = f_sz(s)
+    int m = hour(timenow, z) * 60 + minute(timenow, z)
+    int d = (f_hm(s, part) - m + 1440) % 1440
+    (d == 0 ? 1440 : d) * 60000 - second(timenow, z) * 1000
 f_fmt(int ms) =>
     int h = int(ms / 3600000)
     int m = int((ms % 3600000) / 60000)
@@ -1749,56 +1725,139 @@ int  nyDow = dayofweek(timenow, "America/New_York")
 int  nyNow = hour(timenow, "America/New_York") * 60 + minute(timenow, "America/New_York")
 bool wkClosed = nyDow == dayofweek.saturday or (nyDow == dayofweek.sunday and nyNow < 1020) or (nyDow == dayofweek.friday and nyNow >= 1020)
 
-string stTxt = "NO TRADE TIME"
+// statut : ordre d'ISLB (fenêtres de trading d'abord)
+array<string> stS = array.from(sLdnKZ, sLdnS, sNyTT, sNyPM, sLiq1, sLiq2, sAsia)
+array<string> stN = array.from("LONDON KILLZONE", "LONDON SESSION", "NEW YORK SESSION", "NY PM SESSION", "FRANKFURT CANDLE · NO TRADE", "NY LIQ. CANDLE · NO TRADE", "ASIA SESSION · NO TRADE")
+string stTxt = wkClosed ? "MARKET CLOSED" : "NO TRADE TIME"
 bool   stTrd = false
 int    stEnd = na
-if wkClosed
-    stTxt := "MARKET CLOSED"
-else if f_in(mKzS, mLdnS)
-    stTxt := "LONDON KILLZONE"
-    stTrd := true
-    stEnd := mLdnS
-else if f_in(mLdnS, mLdnE)
-    stTxt := "LONDON SESSION"
-    stTrd := true
-    stEnd := mLdnE
-else if f_in(mNyS, mNyE)
-    stTxt := "NEW YORK SESSION"
-    stTrd := true
-    stEnd := mNyE
-else if nyPmOn and f_in(mNpS, mNpE)
-    stTxt := "NY PM SESSION"
-    stTrd := nyPmTrd
-    stEnd := mNpE
-else if f_in(mFftS, mKzS)
-    stTxt := "FRANKFURT CANDLE · NO TRADE"
-    stEnd := mKzS
-else if f_in(mNyLS, mNyS)
-    stTxt := "NY LIQ. CANDLE · NO TRADE"
-    stEnd := mNyS
-else if f_in(mAsiaS, mAsiaE)
-    stTxt := "ASIA SESSION · NO TRADE"
-    stEnd := mAsiaE
+if not wkClosed
+    for i = 0 to 6
+        if na(stEnd) and (i != 3 or nyPmOn) and f_nowIn(stS.get(i))
+            stTxt := stN.get(i)
+            stTrd := i < 3 or (i == 3 and nyPmTrd)
+            stEnd := f_msTo(stS.get(i), 1)
 
-// prochaine fenêtre
-string nxTxt = "Asia session"
-int    nxMs  = f_until(mAsiaS)
-f_nx(int ms0, string t0, int nyStart, string name, bool on) =>
-    int ms = f_until(nyStart)
-    int rm = ms0
-    string rt = t0
-    if on and ms < ms0
-        rm := ms
-        rt := name
-    [rm, rt]
-[nm1, nt1] = f_nx(nxMs, nxTxt, mFftS, "Frankfurt candle", true)
-[nm2, nt2] = f_nx(nm1, nt1, mKzS,  "London killzone", true)
-[nm3, nt3] = f_nx(nm2, nt2, mLdnS, "London session", true)
-[nm4, nt4] = f_nx(nm3, nt3, mNyLS, "NY liq. candle", true)
-[nm5, nt5] = f_nx(nm4, nt4, mNyS,  "New York session", true)
-[nm6, nt6] = f_nx(nm5, nt5, mNpS,  "NY PM session", nyPmOn)
-nxMs  := nm6
-nxTxt := nt6
+// prochaine fenêtre à ouvrir
+array<string> nxS = array.from(sAsia, sLiq1, sLdnKZ, sLdnS, sLiq2, sNyTT, sNyPM)
+array<string> nxN = array.from("Asia session", "Frankfurt candle", "London killzone", "London session", "NY liq. candle", "New York session", "NY PM session")
+string nxTxt = ""
+int    nxMs  = na
+for i = 0 to 6
+    if i != 6 or nyPmOn
+        int ms = f_msTo(nxS.get(i), 0)
+        if na(nxMs) or ms < nxMs
+            nxMs  := ms
+            nxTxt := nxN.get(i)
+
+// pré-alertes : quelques minutes avant chaque ouverture / fermeture
+var array<int> warned = array.new<int>()
+array<string> prS = array.from(sAsia, sAsia, sLiq1, sLdnKZ, sLdnS, sLdnTT, sLiq2, sNyTT, sNyTT, sNyPM)
+array<int>    prP = array.from(0, 1, 0, 0, 0, 1, 0, 0, 1, 0)
+array<string> prN = array.from("Asie ouvre", "Asie ferme", "Bougie Frankfurt", "Killzone et temps de trading Londres", "Séance de Londres", "Fin du temps de trading Londres", "Bougie de liquidité NY", "Séance et temps de trading New York", "Fin du temps de trading New York", "NY PM")
+string pre = ""
+if alPre and barstate.isrealtime
+    for i = 0 to 9
+        if i != 9 or nyPmOn
+            int ms = f_msTo(prS.get(i), prP.get(i))
+            int t  = timenow - timenow % 60000 + ms - ms % 60000 + 60000 * (ms % 60000 > 0 ? 1 : 0)
+            if ms <= preMin * 60000 and not warned.includes(t)
+                warned.push(t)
+                if warned.size() > 50
+                    warned.shift()
+                string txt = prN.get(i) + " à " + str.format_time(t, "HH:mm", myTz)
+                pre := pre == "" ? txt : pre + " · " + txt
+if pre != ""
+    alert("CX Liquidity " + syminfo.ticker + " : dans " + str.tostring(preMin) + " min : " + pre, alert.freq_all)
+
+// =====================================================================================
+//  SÉANCES LuxAlgo (Session Sweeps, f_pSWP + Sessions Tabular View) : Asie, Londres,
+//  NY AM, NY PM, sur les fenêtres ci-dessus. Dessins en bar_index (fixes).
+// =====================================================================================
+array<string> lxS  = array.from(sAsia, sLdnS, sNyTT, sNyPM)
+array<string> lxNm = array.from("Asia", "London", "NY AM", "NY PM")
+array<color>  lxC  = array.from(lxAsC, lxLdC, lxNaC, lxNpC)
+array<bool>   lxOn = array.from(lxAsOn, lxLdOn, lxNaOn, lxNpOn)
+array<bool>   lxIn = array.from(inS(sAsia), inS(sLdnS), inS(sNyTT), inS(sNyPM))
+var array<line> lxH = array.new<line>(4, na)
+var array<line> lxL = array.new<line>(4, na)
+var array<box>  lxB = array.new<box>(4, na)
+var array<bool> lxP = array.new<bool>(4, false)
+// niveaux de la dernière séance terminée (pointillés), prolongés jusqu'à la suivante
+var line pSH = na
+var line pSM = na
+var line pSL = na
+for i = 0 to 3
+    bool  c  = lxOn.get(i) and lxIn.get(i) and canShow
+    color cc = lxC.get(i)
+    if c and not lxP.get(i)
+        line lh = line.new(bar_index, high, bar_index, high, color = color.new(cc, sesDET ? 0 : sesFT), style = line.style_solid, width = sesLNW)
+        line ll = line.new(bar_index, low, bar_index, low, color = color.new(cc, sesDET ? 0 : sesFT), style = line.style_solid, width = sesLNW)
+        lxH.set(i, lh)
+        lxL.set(i, ll)
+        if lxFill
+            linefill.new(lh, ll, color.new(cc, sesFT))
+        lxB.set(i, sesNM ? box.new(bar_index, low, bar_index, low, text = lxNm.get(i), text_size = size.tiny, text_halign = text.align_left, text_valign = text.align_top, text_color = color.new(cc, 25), bgcolor = color(na), border_color = color(na)) : na)
+    if c
+        line lh = lxH.get(i)
+        line ll = lxL.get(i)
+        float hh = math.max(high, lh.get_y1())
+        float lo = math.min(low, ll.get_y1())
+        lh.set_y1(hh)
+        lh.set_y2(hh)
+        lh.set_x2(bar_index)
+        ll.set_y1(lo)
+        ll.set_y2(lo)
+        ll.set_x2(bar_index)
+        if not na(lxB.get(i))
+            lxB.get(i).set_bottom(lo)
+            lxB.get(i).set_top(lo)
+    if not c and lxP.get(i) and not na(lxH.get(i))
+        float hh = lxH.get(i).get_y1()
+        float lo = lxL.get(i).get_y1()
+        pSH := lxMM ? line.new(bar_index - 1, hh, bar_index, hh, color = cc, style = line.style_dotted, width = sesLNW) : na
+        pSM := lxMid ? line.new(bar_index - 1, (hh + lo) / 2, bar_index, (hh + lo) / 2, color = cc, style = line.style_dotted, width = sesLNW) : na
+        pSL := lxMM ? line.new(bar_index - 1, lo, bar_index, lo, color = cc, style = line.style_dotted, width = sesLNW) : na
+    lxP.set(i, c)
+line.set_x2(pSH, bar_index)
+line.set_x2(pSM, bar_index)
+line.set_x2(pSL, bar_index)
+
+// Sessions Tabular View : date-heure (ton fuseau), ouverture / fermeture, week-end
+f_hms(int ms) =>
+    int h = int(ms / 3600000)
+    int m = int((ms % 3600000) / 60000)
+    int sc = int((ms % 60000) / 1000)
+    str.tostring(h, "00") + ":" + str.tostring(m, "00") + ":" + str.tostring(sc, "00")
+f_sesDet(string s) =>
+    string dt = str.format_time(timenow, "dd/MM/yyyy-HH:mm:ss", myTz)
+    string r = ""
+    if wkClosed
+        r := dt + " 🟠 Weekend"
+    else if f_nowIn(s)
+        int ms = f_msTo(s, 1)
+        int sc = int((ms % 60000) / 1000)
+        r := dt + (ms < 3600000 and sc % 2 != 0 ? " 🔴" : " 🟢") + " Closes in " + f_hms(ms)
+    else
+        int ms = f_msTo(s, 0)
+        int sc = int((ms % 60000) / 1000)
+        r := dt + (ms < 3600000 and sc % 2 != 0 ? " 🟢" : " 🔴") + " Opens in " + f_hms(ms)
+    r
+string lxSz  = sesTS == "Small" ? size.small : sesTS == "Normal" ? size.normal : size.tiny
+string lxPos = sesPOS == "Top Left" ? position.top_left : sesPOS == "Top Center" ? position.top_center : sesPOS == "Top Right" ? position.top_right : sesPOS == "Middle Right" ? position.middle_right : sesPOS == "Bottom Center" ? position.bottom_center : position.bottom_left
+var table lxT = sesTSH ? table.new(lxPos, 3, 4, border_width = 3) : na
+if barstate.islast and not na(lxT)
+    table.clear(lxT, 0, 0, 2, 3)
+    int r = 0
+    for i = 0 to 3
+        if lxOn.get(i)
+            color cc = lxC.get(i)
+            string ses = f_sesDet(lxS.get(i))
+            color sc = str.contains(ses, "Closes") ? #26a69a : #ef5350
+            table.cell(lxT, 0, r, "█", text_size = lxSz, text_color = cc)
+            table.cell(lxT, 1, r, lxNm.get(i), text_color = cc, bgcolor = color.new(cc, 75), text_halign = text.align_left, text_size = lxSz)
+            table.cell(lxT, 2, r, ses, text_color = sc, bgcolor = color.new(sc, 75), text_halign = text.align_left, text_size = lxSz)
+            r += 1
 
 f_biasRows(table t) =>
     string l60 = f_left("60")
@@ -1827,7 +1886,7 @@ f_biasRows(table t) =>
         color stBg  = color.new(stCol, 80)
         f_cell(t, 0, 6, "NOW", stCol, text.align_left, boxSz, stBg)
         f_cell(t, 1, 6, stTxt, stCol, text.align_center, boxSz, stBg)
-        f_cell(t, 2, 6, na(stEnd) ? "" : "fin dans " + f_fmt(f_until(stEnd)), stCol, text.align_right, boxSz, stBg)
+        f_cell(t, 2, 6, na(stEnd) ? "" : "fin dans " + f_fmt(stEnd), stCol, text.align_right, boxSz, stBg)
         f_cell(t, 0, 7, "NEXT", TK_LB, text.align_left, boxSz, TK_BG)
         f_cell(t, 1, 7, nxTxt, TK_TX, text.align_center, boxSz, TK_BG)
         f_cell(t, 2, 7, "dans " + f_fmt(nxMs), TK_LB, text.align_right, boxSz, TK_BG)
