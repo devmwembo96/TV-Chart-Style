@@ -800,27 +800,6 @@ f_lvl(array<float> lp, array<string> ln, array<bool> lh, float p, string nm, boo
 array<float>  lvP = array.new<float>()
 array<string> lvN = array.new<string>()
 array<bool>   lvH = array.new<bool>()
-f_lvl(lvP, lvN, lvH, L_aHi,  "Asia H", true,  okAH)
-f_lvl(lvP, lvN, lvH, L_aLo,  "Asia L", false, okAL)
-f_lvl(lvP, lvN, lvH, L_fftH, "Frankfurt H", true, okFH)
-f_lvl(lvP, lvN, lvH, L_fftL, "Frankfurt L", false, okFL)
-f_lvl(lvP, lvN, lvH, L_nycH, "NY liq H", true, okNH)
-f_lvl(lvP, lvN, lvH, L_nycL, "NY liq L", false, okNL)
-f_lvl(lvP, lvN, lvH, L_kzH,  "KZ H",   true,  okKH)
-f_lvl(lvP, lvN, lvH, L_kzL,  "KZ L",   false, okKL)
-f_lvl(lvP, lvN, lvH, L_ldnH, "London H", true, okLH)
-f_lvl(lvP, lvN, lvH, L_ldnL, "London L", false, okLL)
-f_lvl(lvP, lvN, lvH, pdH,  "PDH",    true,  okPDH)
-f_lvl(lvP, lvN, lvH, pdL,  "PDL",    false, okPDL)
-f_lvl(lvP, lvN, lvH, pwH,  "PWH",    true,  okPWH)
-f_lvl(lvP, lvN, lvH, pwL,  "PWL",    false, okPWL)
-f_lvl(lvP, lvN, lvH, eqH,  "EQH",    true,  okEH)
-f_lvl(lvP, lvN, lvH, eqL,  "EQL",    false, okEL)
-// CX additions: previous month and NY PM (not part of the ISLB POI engine)
-f_lvl(lvP, lvN, lvH, pmH,  "PMH",    true,  okPMH)
-f_lvl(lvP, lvN, lvH, pmL,  "PML",    false, okPML)
-f_lvl(lvP, lvN, lvH, npH,  "NY PM H", true, okNPH)
-f_lvl(lvP, lvN, lvH, npL,  "NY PM L", false, okNPL)
 
 // ─────────────────────────── Levels swept on this candle ───────────────────────────
 // A level that was live before this candle and that a wick goes through now.
@@ -828,41 +807,31 @@ array<float>  evP = array.new<float>()
 array<string> evN = array.new<string>()
 array<bool>   evH = array.new<bool>()
 array<int>    evX = array.new<int>()
-f_ev(float p, string nm, bool isH, bool on, int xs) =>
-    if on and not na(p)
+array<float> swLv = array.from(L_aHi, L_aLo, L_fftH, L_fftL, L_nycH, L_nycL, L_kzH, L_kzL, L_ldnH, L_ldnL, pdH, pdL, pwH, pwL, eqH, eqL, pmH, pmL, npH, npL)
+array<bool>  swEv = array.from(uAsia and not L_inAsia and nwAH, uAsia and not L_inAsia and nwAL, uFft and not L_inFft and nwFH, uFft and not L_inFft and nwFL, uNyc and not L_inNyc and nwNH, uNyc and not L_inNyc and nwNL, uKz and not L_inKz and nwKH, uKz and not L_inKz and nwKL, uLdn and not L_inLdn and nwLH, uLdn and not L_inLdn and nwLL, uPd and nwPDH, uPd and nwPDL, uPw and nwPWH, uPw and nwPWL, uEq and nwEH, uEq and nwEL, uPm and nwPMH, uPm and nwPML, uNp and nyPmOn and not inNp and nwNPH, uNp and nyPmOn and not inNp and nwNPL)
+array<string> swNm = array.from("Asia H", "Asia L", "Frankfurt H", "Frankfurt L", "NY liq H", "NY liq L", "KZ H", "KZ L", "London H", "London L", "PDH", "PDL", "PWH", "PWL", "EQH", "EQL", "PMH", "PML", "NY PM H", "NY PM L")
+array<int>    swXs = array.from(L_aT0, L_aT0, L_fftT0, L_fftT0, L_nycT0, L_nycT0, L_kzT0, L_kzT0, L_ldnT0, L_ldnT0, int(na), int(na), int(na), int(na), int(na), int(na), int(na), int(na), npT0, npT0)
+// live levels, in the ISLB order (the same price from two sources counts once)
+array<bool>   lvOk = array.from(okAH, okAL, okFH, okFL, okNH, okNL, okKH, okKL, okLH, okLL, okPDH, okPDL, okPWH, okPWL, okEH, okEL, okPMH, okPML, okNPH, okNPL)
+for j = 0 to 19
+    f_lvl(lvP, lvN, lvH, swLv.get(j), swNm.get(j), j % 2 == 0, lvOk.get(j))
+// one pass over the 20 levels (even index = high, odd = low)
+for j = 0 to 19
+    float p   = swLv.get(j)
+    bool  isH = j % 2 == 0
+    if swEv.get(j) and not na(p)
         int k = -1
         if evP.size() > 0
             for i = 0 to evP.size() - 1
                 if evH.get(i) == isH and math.abs(evP.get(i) - p) <= syminfo.mintick * 2
                     k := i
         if k >= 0
-            evN.set(k, evN.get(k) + "/" + nm)
+            evN.set(k, evN.get(k) + "/" + swNm.get(j))
         else
             evP.push(p)
-            evN.push(nm)
+            evN.push(swNm.get(j))
             evH.push(isH)
-            evX.push(xs)
-    true
-f_ev(L_aHi,  "Asia H",      true,  uAsia and not L_inAsia and nwAH, L_aT0)
-f_ev(L_aLo,  "Asia L",      false, uAsia and not L_inAsia and nwAL, L_aT0)
-f_ev(L_fftH, "Frankfurt H", true,  uFft and not L_inFft and nwFH, L_fftT0)
-f_ev(L_fftL, "Frankfurt L", false, uFft and not L_inFft and nwFL, L_fftT0)
-f_ev(L_nycH, "NY liq H",    true,  uNyc and not L_inNyc and nwNH, L_nycT0)
-f_ev(L_nycL, "NY liq L",    false, uNyc and not L_inNyc and nwNL, L_nycT0)
-f_ev(L_kzH,  "KZ H",        true,  uKz and not L_inKz and nwKH, L_kzT0)
-f_ev(L_kzL,  "KZ L",        false, uKz and not L_inKz and nwKL, L_kzT0)
-f_ev(L_ldnH, "London H",    true,  uLdn and not L_inLdn and nwLH, L_ldnT0)
-f_ev(L_ldnL, "London L",    false, uLdn and not L_inLdn and nwLL, L_ldnT0)
-f_ev(pdH,    "PDH",         true,  uPd and nwPDH, na)
-f_ev(pdL,    "PDL",         false, uPd and nwPDL, na)
-f_ev(pwH,    "PWH",         true,  uPw and nwPWH, na)
-f_ev(pwL,    "PWL",         false, uPw and nwPWL, na)
-f_ev(eqH,    "EQH",         true,  uEq and nwEH, na)
-f_ev(eqL,    "EQL",         false, uEq and nwEL, na)
-f_ev(pmH,    "PMH",         true,  uPm and nwPMH, na)
-f_ev(pmL,    "PML",         false, uPm and nwPML, na)
-f_ev(npH,    "NY PM H",     true,  uNp and nyPmOn and not inNp and nwNPH, npT0)
-f_ev(npL,    "NY PM L",     false, uNp and nyPmOn and not inNp and nwNPL, npT0)
+            evX.push(swXs.get(j))
 
 // Levels swept today (from today's Asia session on): price, name, side, time, start.
 var array<float>  tdP = array.new<float>()
@@ -1608,83 +1577,49 @@ f_tfName(string tf) =>
 // Elle s'étend tant que le prix reste dans la marge ; une clôture au-delà de 1.5 × la
 // marge, ou une mèche au-delà de la marge à la fin, en fait un faux sweep (gris).
 var array<box> swBoxes = array.new<box>()
-f_swz(float lvl, bool isH, bool ev) =>
-    var box   bx  = na
-    var bool  act = false
-    var float pS  = na
-    var int   rB  = na
-    float mg = swpM * nz(atr21)
-    if ev and not na(lvl) and (isH ? open < lvl : open > lvl)
-        pS  := lvl
-        rB  := bar_index + 1
-        act := true
-        bx  := na
+// un état par niveau (indices pairs = hauts, impairs = bas), traités dans une seule boucle
+var array<box>   swBx  = array.new<box>(20, na)
+var array<bool>  swAct = array.new<bool>(20, false)
+var array<float> swPs  = array.new<float>(20, na)
+var array<int>   swRb  = array.new<int>(20, na)
+float swMg = swpM * nz(atr21)
+for i = 0 to 19
+    bool  isH = i % 2 == 0
+    float lvl = swLv.get(i)
+    box   bx  = swBx.get(i)
+    float pS  = swPs.get(i)
+    if swEv.get(i) and not na(lvl) and (isH ? open < lvl : open > lvl)
+        swPs.set(i, lvl)
+        swRb.set(i, bar_index + 1)
+        swAct.set(i, true)
+        bx := na
         if swpShow and cxOn
-            bx := isH ? box.new(bar_index - 1, math.min(lvl + mg, high), bar_index + 1, lvl, bgcolor = swpBC, border_color = color(na)) : box.new(bar_index - 1, lvl, bar_index + 1, math.max(lvl - mg, low), bgcolor = swpSC, border_color = color(na))
+            bx := isH ? box.new(bar_index - 1, math.min(lvl + swMg, high), bar_index + 1, lvl, bgcolor = swpBC, border_color = color(na)) : box.new(bar_index - 1, lvl, bar_index + 1, math.max(lvl - swMg, low), bgcolor = swpSC, border_color = color(na))
             swBoxes.push(bx)
             if swBoxes.size() > 60
                 box.delete(swBoxes.shift())
-    else if act
-        if isH
-            if low > pS - mg and high < pS + mg
-                if high > pS
-                    rB := bar_index + 1
-                if not na(bx)
+        swBx.set(i, bx)
+    else if swAct.get(i)
+        if low > pS - swMg and high < pS + swMg
+            if isH ? high > pS : low < pS
+                swRb.set(i, bar_index + 1)
+            if not na(bx)
+                if isH
                     bx.set_top(math.max(high, bx.get_top()))
-                    bx.set_right(rB)
-            else
-                int rgt = rB
-                if close > pS + mg * 1.5
-                    if not na(bx)
-                        bx.set_bgcolor(swpHF ? color(na) : swpFC)
-                        bx.set_right(bar_index)
-                    act := false
-                else if bar_index - rgt >= swpML
-                    if high > pS + mg and not na(bx)
-                        bx.set_bgcolor(swpHF ? color(na) : swpFC)
-                        bx.set_right(bar_index + 1)
-                    act := false
-        else
-            if low > pS - mg and high < pS + mg
-                if low < pS
-                    rB := bar_index + 1
-                if not na(bx)
+                else
                     bx.set_bottom(math.min(low, bx.get_bottom()))
-                    bx.set_right(rB)
-            else
-                int rgt = rB
-                if close < pS - mg * 1.5
-                    if not na(bx)
-                        bx.set_bgcolor(swpHF ? color(na) : swpFC)
-                        bx.set_right(bar_index + 1)
-                    act := false
-                else if bar_index - rgt >= swpML
-                    if low < pS - mg and not na(bx)
-                        bx.set_bgcolor(swpHF ? color(na) : swpFC)
-                        bx.set_right(bar_index + 1)
-                    act := false
-    act
-
-f_swz(L_aHi,  true,  uAsia and not L_inAsia and nwAH)
-f_swz(L_aLo,  false, uAsia and not L_inAsia and nwAL)
-f_swz(L_fftH, true,  uFft and not L_inFft and nwFH)
-f_swz(L_fftL, false, uFft and not L_inFft and nwFL)
-f_swz(L_nycH, true,  uNyc and not L_inNyc and nwNH)
-f_swz(L_nycL, false, uNyc and not L_inNyc and nwNL)
-f_swz(L_kzH,  true,  uKz and not L_inKz and nwKH)
-f_swz(L_kzL,  false, uKz and not L_inKz and nwKL)
-f_swz(L_ldnH, true,  uLdn and not L_inLdn and nwLH)
-f_swz(L_ldnL, false, uLdn and not L_inLdn and nwLL)
-f_swz(pdH,    true,  uPd and nwPDH)
-f_swz(pdL,    false, uPd and nwPDL)
-f_swz(pwH,    true,  uPw and nwPWH)
-f_swz(pwL,    false, uPw and nwPWL)
-f_swz(eqH,    true,  uEq and nwEH)
-f_swz(eqL,    false, uEq and nwEL)
-f_swz(pmH,    true,  uPm and nwPMH)
-f_swz(pmL,    false, uPm and nwPML)
-f_swz(npH,    true,  uNp and nyPmOn and not inNp and nwNPH)
-f_swz(npL,    false, uNp and nyPmOn and not inNp and nwNPL)
+                bx.set_right(swRb.get(i))
+        else
+            if isH ? close > pS + swMg * 1.5 : close < pS - swMg * 1.5
+                if not na(bx)
+                    bx.set_bgcolor(swpHF ? color(na) : swpFC)
+                    bx.set_right(isH ? bar_index : bar_index + 1)
+                swAct.set(i, false)
+            else if bar_index - swRb.get(i) >= swpML
+                if (isH ? high > pS + swMg : low < pS - swMg) and not na(bx)
+                    bx.set_bgcolor(swpHF ? color(na) : swpFC)
+                    bx.set_right(bar_index + 1)
+                swAct.set(i, false)
 
 // =====================================================================================
 //  PREMIUM / DISCOUNT : dernier plus haut et dernier plus bas de swing confirmés
