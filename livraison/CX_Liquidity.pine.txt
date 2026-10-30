@@ -2077,12 +2077,6 @@ if barstate.islast
     send_it(bull_inv_ary)
     send_it(bear_inv_ary)
 
-// [CX] diagnostic temporaire : ce que le code IFVG a en mémoire sur la dernière bougie
-ifvgDbg = input.bool(true, "Diagnostic IFVG (temporaire)")
-var label ifvgDbgLb = na
-if barstate.islast and ifvgDbg
-    label.delete(ifvgDbgLb)
-    ifvgDbgLb := label.new(bar_index, high, "IFVG diag · FVG " + str.tostring(bull_fvg_ary.size()) + "/" + str.tostring(bear_fvg_ary.size()) + " · inversions " + str.tostring(bull_inv_ary.size()) + "/" + str.tostring(bear_inv_ary.size()) + " · boîtes IFVG " + str.tostring(ifvgBoxes.size()) + " · boîtes script " + str.tostring(box.all.size()) + " · lignes " + str.tostring(line.all.size()) + " · étiquettes " + str.tostring(label.all.size()) + " · barres " + str.tostring(bar_index + 1), style = label.style_label_down, color = color.new(#FF9800, 0), textcolor = color.white, size = size.small)
 
 //Alert Options
 alertcondition(bull_signal, "Bullish Signal")
