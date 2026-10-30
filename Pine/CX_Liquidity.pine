@@ -1903,8 +1903,9 @@ if barstate.islast and not na(tb)
 
 // =====================================================================================
 //  INVERSION FAIR VALUE GAPS (IFVG) © LuxAlgo — CC BY-NC-SA 4.0
-//  Code d'origine repris tel quel. Seules adaptations, marquées [CX] : passage en Pine v6
-//  (array.new<…>() au lieu de array.new<…>(na)) et effacement limité aux dessins IFVG.
+//  Code d'origine repris tel quel. Adaptations marquées [CX] : passage en Pine v6
+//  (array.new<…>() au lieu de array.new<…>(na)), effacement limité aux dessins IFVG,
+//  ancien FVG masqué une fois inversé (la zone et le milieu partent de l'inversion).
 // =====================================================================================
 var ifvgBoxes  = array.new<box>()
 var ifvgLines  = array.new<line>()
@@ -2015,10 +2016,11 @@ send_it(_ary) => // Draws Everything on the Chart
         o_col = value.dir == -1 ? red : green
 
         if index > last_index - disp_num
-            ifvgBoxes.push(box.new(bx_left,bx_top,xval,bx_bot,bgcolor = col, border_color = invis, xloc = xloc.bar_time))
+            // [CX] ancien FVG (avant l'inversion) masqué : seule la zone inversée reste
+            // ifvgBoxes.push(box.new(bx_left,bx_top,xval,bx_bot,bgcolor = col, border_color = invis, xloc = xloc.bar_time))
             ifvgBoxes.push(box.new(xval,bx_top,time,bx_bot, bgcolor = o_col, border_color = invis, xloc = xloc.bar_time))
 
-            ifvgLines.push(line.new(bx_left,mid,time,mid, color = gray, style = line.style_dashed, xloc = xloc.bar_time))
+            ifvgLines.push(line.new(xval,mid,time,mid, color = gray, style = line.style_dashed, xloc = xloc.bar_time))  // [CX] depuis l'inversion
             ifvgBoxes.push(box.new(bar_index,bx_top,bar_index+50,bx_bot, bgcolor = o_col, border_color = invis))
             ifvgLines.push(line.new(bar_index,mid,bar_index+50,mid, color = gray, style = line.style_dashed))
 
@@ -2077,6 +2079,12 @@ if barstate.islast
     send_it(bull_inv_ary)
     send_it(bear_inv_ary)
 
+// [CX] diagnostic temporaire : ce que le code IFVG a en mémoire sur la dernière bougie
+ifvgDbg = input.bool(true, "Diagnostic IFVG (temporaire)")
+var label ifvgDbgLb = na
+if barstate.islast and ifvgDbg
+    label.delete(ifvgDbgLb)
+    ifvgDbgLb := label.new(bar_index, high, "IFVG diag · FVG " + str.tostring(bull_fvg_ary.size()) + "/" + str.tostring(bear_fvg_ary.size()) + " · inversions " + str.tostring(bull_inv_ary.size()) + "/" + str.tostring(bear_inv_ary.size()) + " · boîtes IFVG " + str.tostring(ifvgBoxes.size()) + " · boîtes script " + str.tostring(box.all.size()) + " · lignes " + str.tostring(line.all.size()) + " · étiquettes " + str.tostring(label.all.size()) + " · barres " + str.tostring(bar_index + 1), style = label.style_label_down, color = color.new(#FF9800, 0), textcolor = color.white, size = size.small)
 
 //Alert Options
 alertcondition(bull_signal, "Bullish Signal")
