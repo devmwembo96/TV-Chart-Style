@@ -1,0 +1,507 @@
+﻿//+------------------------------------------------------------------+
+//| CX_BosChoch.mq5                                                  |
+//| CX BOS & CHoCH : portage MT5 fidèle de l'indicateur Pine         |
+//| « BOS & CHoCH » (pivots, cassures à la clôture, tendance).       |
+//|  - Pivot haut / bas de longueur Pivot Length de chaque côté.     |
+//|  - Clôture au-dessus du dernier swing haut : CHoCH si la         |
+//|    tendance était baissière, sinon BOS ; le swing est consommé.  |
+//|  - Clôture sous le dernier swing bas : CHoCH si la tendance      |
+//|    était haussière, sinon BOS.                                   |
+//|  - Ligne du swing jusqu'à la bougie de cassure, texte au milieu. |
+//| Dessin en CCanvas façon TradingView (Trebuchet MS, 1 px), limite |
+//| de 500 objets par type comme TradingView. Alertes à la clôture.  |
+//+------------------------------------------------------------------+
+#property copyright   "CX BOS & CHoCH"
+#property version     "1.00"
+#property description "CX BOS & CHoCH : cassures de structure (BOS) et changements de caractère (CHoCH), style TradingView."
+#property indicator_chart_window
+#property indicator_buffers 0
+#property indicator_plots   0
+
+#include <Canvas\Canvas.mqh>
+
+enum ENUM_LSTYLE { sol = 0, dsh = 1, dot = 2 };
+enum ENUM_TSIZE  { tiny = 0, small = 1, normal = 2 };
+
+input group "BOS & CHoCH"
+input int        InpLength  = 5;                  // Pivot Length
+input bool       ShowLabels = true;               // Show Labels
+input color      ColBull    = C'8,153,129';       // Bullish Color
+input color      ColBear    = C'242,54,69';       // Bearish Color
+input ENUM_TSIZE LabelSize  = tiny;               // Taille du texte (TradingView : tiny)
+input group "Alerts (à la clôture de la bougie)"
+input bool   AlertOnBOS   = true;                 // Alert on BOS
+input bool   AlertOnCHoCH = true;                 // Alert on CHoCH
+input bool   AlPopup      = true;                 // Fenêtre et son MT5
+input bool   AlPush       = true;                 // Notification mobile (MetaQuotes ID)
+input group "MT5"
+input int    InpMaxBars = 5000;                   // Bougies calculées (TradingView : 5 000)
+input string InpFont    = "Trebuchet MS";         // Police (celle de TradingView)
+
+#define NA        EMPTY_VALUE
+#define NAI       -1
+#define MAX_OBJ   500
+
+enum ENUM_LBLSTYLE { LS_DOWN = 0, LS_UP = 1 };
+
+//--- Alertes : collectées pendant le calcul d'une bougie clôturée en direct, envoyées ensemble
+bool   gAlertLive = false;
+string gAlertBuf  = "";
+string Px2(double p) { return DoubleToString(p, _Digits); }
+void   Ev(bool on, string msg)
+  {
+   if(!on || !gAlertLive) return;
+   if(StringFind(gAlertBuf, msg) >= 0) return;
+   gAlertBuf += (gAlertBuf == "" ? "" : " · ") + msg;
+  }
+
+uint A(const color c, const int transp)
+  {
+   return ColorToARGB(c, (uchar)MathRound(255.0 * (100 - MathMax(0, MathMin(100, transp))) / 100.0));
+  }
+
+//--- Objets dessinés (line, label de Pine ; box gardé pour le moteur de dessin). x : indice local.
+struct DLine  { double x1; double y1; double x2; double y2; uint clr; int style; bool alive; };
+struct DBox   { double x1; double top; double x2; double bot; uint bg; uint bd; int bw; bool alive; };
+struct DLabel { double x; double y; string text; string sym; uint bg; uint tc; int style; int size; bool alive; };
+
+template<typename T> void Push(T &a[], const T &v) { int n = ArraySize(a); ArrayResize(a, n + 1, 64); a[n] = v; }
+template<typename T> void CopyArr(T &d[], const T &s[])
+  {
+   int n = ArraySize(s);
+   ArrayResize(d, n, 64);
+   for(int i = 0; i < n; i++) d[i] = s[i];
+  }
+
+//+------------------------------------------------------------------+
+//| État complet du script (variables « var » et objets)             |
+//+------------------------------------------------------------------+
+class CState
+  {
+public:
+   DLine  lines[];  DBox boxes[];  DLabel labels[];
+   int    liveL, oldL, liveT, oldT;
+   double swingHighPrice, swingLowPrice;
+   int    swingHighIndex, swingLowIndex;
+   int    trend;                         // 0 départ, 1 haussière, -1 baissière
+
+   void Reset()
+     {
+      ArrayFree(lines); ArrayFree(boxes); ArrayFree(labels);
+      liveL = oldL = liveT = oldT = 0;
+      swingHighPrice = swingLowPrice = NA;
+      swingHighIndex = swingLowIndex = NAI;
+      trend = 0;
+     }
+
+   void CopyFrom(const CState &o)
+     {
+      CopyArr(lines, o.lines); CopyArr(boxes, o.boxes); CopyArr(labels, o.labels);
+      liveL = o.liveL; oldL = o.oldL; liveT = o.liveT; oldT = o.oldT;
+      swingHighPrice = o.swingHighPrice; swingLowPrice = o.swingLowPrice;
+      swingHighIndex = o.swingHighIndex; swingLowIndex = o.swingLowIndex;
+      trend = o.trend;
+     }
+
+   //--- TradingView efface le plus ancien objet au-delà de 500 par type
+   void LineNew(double x1, double y1, double x2, double y2, uint clr, int style)
+     {
+      DLine l; l.x1 = x1; l.y1 = y1; l.x2 = x2; l.y2 = y2; l.clr = clr; l.style = style; l.alive = true;
+      Push(lines, l); liveL++;
+      while(liveL > MAX_OBJ && oldL < ArraySize(lines)) { if(lines[oldL].alive) { lines[oldL].alive = false; liveL--; } oldL++; }
+     }
+   void LabelNew(double x, double y, string text, uint tc, int style, int size)
+     {
+      DLabel t; t.x = x; t.y = y; t.text = text; t.sym = ""; t.bg = 0; t.tc = tc; t.style = style; t.size = size; t.alive = true;
+      Push(labels, t); liveT++;
+      while(liveT > MAX_OBJ && oldT < ArraySize(labels)) { if(labels[oldT].alive) { labels[oldT].alive = false; liveT--; } oldT++; }
+     }
+  };
+
+//--- Données du graphique (fenêtre de InpMaxBars bougies, indice 0 = la plus ancienne)
+double   gO[], gH[], gL[], gC[];
+datetime gT[];
+int      gN = 0, gBase = 0, gTotal = 0, gProcessed = -1, gPer = 60;
+CState   gCommit, gWork;
+double   gDpi = 1.0;
+
+//--- Canvas
+CCanvas  gCv;
+string   gName;
+bool     gCvOk = false;
+int      gW = 0, gHh = 0;
+uint     gLastRender = 0, gLastWork = 0;
+bool     gDirty = false;
+
+int OnInit()
+  {
+   if(InpLength < 1 || InpMaxBars < 300)
+      return INIT_PARAMETERS_INCORRECT;
+   gDpi = MathMax(1.0, TerminalInfoInteger(TERMINAL_SCREEN_DPI) / 96.0);
+   gName = "CXBC_" + IntegerToString(ChartID()) + "_" + IntegerToString(GetTickCount());
+   IndicatorSetString(INDICATOR_SHORTNAME, "CX BOS & CHoCH");
+   gProcessed = -1;
+   EventSetMillisecondTimer(100);
+   return INIT_SUCCEEDED;
+  }
+
+void OnDeinit(const int reason)
+  {
+   EventKillTimer();
+   if(gCvOk) gCv.Destroy();
+   gCvOk = false;
+   ChartRedraw();
+  }
+
+//--- ta.pivothigh / ta.pivotlow : à égalité, c'est la plus à gauche
+bool PivotHigh(int t, int len)
+  {
+   int c = t - len;
+   if(c - len < 0) return false;
+   for(int i = 1; i <= len; i++)
+      if(gH[c - i] >= gH[c] || gH[c + i] > gH[c]) return false;
+   return true;
+  }
+bool PivotLow(int t, int len)
+  {
+   int c = t - len;
+   if(c - len < 0) return false;
+   for(int i = 1; i <= len; i++)
+      if(gL[c - i] <= gL[c] || gL[c + i] < gL[c]) return false;
+   return true;
+  }
+
+//--- drawLine du Pine : ligne pleine du swing à la cassure, texte au milieu
+void DrawBreak(CState &S, int x1, double y, int x2, color c, string txt, bool isBearish)
+  {
+   S.LineNew(x1, y, x2, y, A(c, 0), sol);
+   if(ShowLabels)
+     {
+      int midpoint = (int)MathRound((x1 + x2) / 2.0);      // int(math.avg(x1, x2)) de Pine
+      S.LabelNew(midpoint, y, txt, A(c, 0), isBearish ? LS_UP : LS_DOWN, (int)LabelSize);
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Une exécution du script sur la bougie t                          |
+//+------------------------------------------------------------------+
+void ProcessBar(CState &S, int t)
+  {
+//--- Updating Swing Points
+   if(PivotHigh(t, InpLength)) { S.swingHighPrice = gH[t - InpLength]; S.swingHighIndex = t - InpLength; }
+   if(PivotLow(t, InpLength))  { S.swingLowPrice  = gL[t - InpLength]; S.swingLowIndex  = t - InpLength; }
+
+//--- Bullish Break (Price closes above Swing High)
+   if(S.swingHighPrice != NA && gC[t] > S.swingHighPrice)
+     {
+      bool choch = S.trend == -1;
+      DrawBreak(S, S.swingHighIndex, S.swingHighPrice, t, ColBull, choch ? "CHoCH" : "BOS", false);
+      S.trend = 1;
+      if(choch) Ev(AlertOnCHoCH, "Bullish CHoCH @ " + Px2(gC[t]));
+      else      Ev(AlertOnBOS,   "Bullish BOS @ " + Px2(gC[t]));
+      S.swingHighPrice = NA;
+     }
+
+//--- Bearish Break (Price closes below Swing Low)
+   if(S.swingLowPrice != NA && gC[t] < S.swingLowPrice)
+     {
+      bool choch = S.trend == 1;
+      DrawBreak(S, S.swingLowIndex, S.swingLowPrice, t, ColBear, choch ? "CHoCH" : "BOS", true);
+      S.trend = -1;
+      if(choch) Ev(AlertOnCHoCH, "Bearish CHoCH @ " + Px2(gC[t]));
+      else      Ev(AlertOnBOS,   "Bearish BOS @ " + Px2(gC[t]));
+      S.swingLowPrice = NA;
+     }
+  }
+
+//+------------------------------------------------------------------+
+int OnCalculate(const int rates_total, const int prev_calculated, const datetime &time[],
+                const double &open[], const double &high[], const double &low[], const double &close[],
+                const long &tick_volume[], const long &volume[], const int &spread[])
+  {
+   if(rates_total < 2 * InpLength + 2)
+      return 0;
+   gPer = PeriodSeconds(PERIOD_CURRENT);
+   bool full = prev_calculated == 0 || gProcessed == -1 || rates_total < gTotal || rates_total - gTotal > 1;
+   int from = 0;
+   if(full)
+     {
+      gBase = MathMax(0, rates_total - InpMaxBars);
+      gN = rates_total - gBase;
+     }
+   else
+     {
+      from = gN - 1;
+      gN = rates_total - gBase;
+     }
+   ArrayResize(gO, gN); ArrayResize(gH, gN); ArrayResize(gL, gN); ArrayResize(gC, gN); ArrayResize(gT, gN);
+   for(int i = from; i < gN; i++)
+     {
+      gO[i] = open[gBase + i]; gH[i] = high[gBase + i]; gL[i] = low[gBase + i]; gC[i] = close[gBase + i];
+      gT[i] = time[gBase + i];
+     }
+   gTotal = rates_total;
+   if(full)
+     {
+      gCommit.Reset();
+      gProcessed = 0;
+     }
+   bool newBar = false;
+   while(gProcessed < gN - 1)
+     {
+      //--- alertes seulement pour les bougies qui clôturent en direct, pas pour l'historique
+      gAlertLive = !full && gProcessed >= gN - 3;
+      gAlertBuf = "";
+      ProcessBar(gCommit, gProcessed);
+      gAlertLive = false;
+      if(gAlertBuf != "")
+         SendAlert(gAlertBuf, gT[gProcessed]);
+      gProcessed++;
+      newBar = true;
+     }
+//--- bougie en cours : recalculée sur une copie de l'état, comme TradingView à chaque tick
+   uint now = GetTickCount();
+   if(full || newBar || now - gLastWork >= 250)
+     {
+      gWork.CopyFrom(gCommit);
+      ProcessBar(gWork, gN - 1);
+      gLastWork = now;
+      Render(gWork);
+      gLastRender = now;
+     }
+   return rates_total;
+  }
+
+void SendAlert(string msg, datetime bar)
+  {
+   string tf = gPer < 3600 ? "M" + IntegerToString(gPer / 60) : gPer < 86400 ? "H" + IntegerToString(gPer / 3600)
+               : gPer == 86400 ? "D1" : gPer == 604800 ? "W1" : "MN1";
+   string txt = "CX BOS & CHoCH " + _Symbol + " " + tf + " " + TimeToString(bar, TIME_MINUTES) + " : " + msg;
+   if(AlPopup) Alert(txt);
+   if(AlPush)  SendNotification(StringSubstr(txt, 0, 255));
+  }
+
+void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
+  {
+   if(id != CHARTEVENT_CHART_CHANGE || gN <= 0 || gProcessed < 0)
+      return;
+   gDirty = true;
+   if(GetTickCount() - gLastRender >= 40)
+      Render(gWork);               // sinon la minuterie redessine (défilement rapide)
+  }
+
+void OnTimer()
+  {
+   if(gDirty && gProcessed >= 0)
+      Render(gWork);
+  }
+
+//+------------------------------------------------------------------+
+//| Dessin                                                           |
+//+------------------------------------------------------------------+
+double gX0 = 0, gSp = 1, gY0 = 0, gKy = 0, gPMax = 0;
+int    gT0 = 0;
+
+int    Px(double v)  { return (int)MathRound(v * gDpi); }
+int    Wpx(int w)    { return MathMax(1, (int)MathFloor(w * gDpi)); }
+double XofBar(double b) { return gX0 + (b - gT0) * gSp; }
+double YofPrice(double p) { return gY0 + (gPMax - p) * gKy; }
+
+//--- mélange « par-dessus » en entiers : les grandes zones se redessinent vite au défilement
+void BlendPx(int x, int y, uint c, double cov)
+  {
+   if(x < 0 || y < 0 || x >= gW || y >= gHh) return;
+   uint sa = (uint)(((c >> 24) & 0xFF) * (cov >= 1.0 ? 1.0 : cov));
+   if(sa == 0) return;
+   uint d = gCv.PixelGet(x, y);
+   uint da = (d >> 24) & 0xFF;
+   if(sa >= 255 || da == 0) { gCv.PixelSet(x, y, (sa << 24) | (c & 0xFFFFFF)); return; }
+   uint k  = da * (255 - sa) / 255;
+   uint oa = sa + k;
+   uint r = ((((c >> 16) & 0xFF) * sa) + (((d >> 16) & 0xFF) * k)) / oa;
+   uint g = ((((c >> 8) & 0xFF) * sa) + (((d >> 8) & 0xFF) * k)) / oa;
+   uint b = (((c & 0xFF) * sa) + ((d & 0xFF) * k)) / oa;
+   gCv.PixelSet(x, y, (oa << 24) | (r << 16) | (g << 8) | b);
+  }
+
+void FillRect(int x1, int y1, int x2, int y2, uint c)
+  {
+   int xa = MathMax(MathMin(x1, x2), 0), xb = MathMin(MathMax(x1, x2), gW - 1);
+   int ya = MathMax(MathMin(y1, y2), 0), yb = MathMin(MathMax(y1, y2), gHh - 1);
+   for(int y = ya; y <= yb; y++)
+      for(int x = xa; x <= xb; x++)
+         BlendPx(x, y, c, 1.0);
+  }
+
+void FillRoundRect(int x1, int y1, int x2, int y2, double rad, uint c)
+  {
+   for(int y = MathMax(y1, 0); y < MathMin(y2, gHh); y++)
+      for(int x = MathMax(x1, 0); x < MathMin(x2, gW); x++)
+        {
+         double px = x + 0.5, py = y + 0.5;
+         double qx = MathMax(MathMax(x1 + rad - px, px - (x2 - rad)), 0.0);
+         double qy = MathMax(MathMax(y1 + rad - py, py - (y2 - rad)), 0.0);
+         double cov = 1.0;
+         if(qx > 0.0 && qy > 0.0) cov = MathMax(0.0, MathMin(1.0, rad + 0.5 - MathSqrt(qx * qx + qy * qy)));
+         if(cov > 0.0) BlendPx(x, y, c, cov);
+        }
+  }
+
+//--- trait de 1 px (plein, tirets, points), horizontal, vertical ou oblique
+void DrawLine(double x1, double y1, double x2, double y2, int style, int w, uint c)
+  {
+   double m = 2000;
+   if(MathMax(x1, x2) < -m || MathMin(x1, x2) > gW + m) return;
+   double len = MathSqrt((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1));
+   int on = 0, off = 0;
+   if(style == dsh) { on = Px(4); off = Px(4); }
+   if(style == dot) { on = MathMax(w, 1); off = MathMax(w, 1) * 2; }
+   if(len < 1.0) { BlendPx((int)MathRound(x1), (int)MathRound(y1), c, 1.0); return; }
+   double s0 = 0, s1 = len;
+   if(x2 != x1)
+     {
+      double ta = (0 - x1) / (x2 - x1) * len, tb = (gW - x1) / (x2 - x1) * len;
+      s0 = MathMax(0.0, MathMin(ta, tb) - 2); s1 = MathMin(len, MathMax(ta, tb) + 2);
+     }
+   int lx = -100000, ly = -100000;
+   for(double s = s0; s <= s1; s += 1.0)
+     {
+      if(style != sol && ((int)s % (on + off)) >= on) continue;
+      int x = (int)MathRound(x1 + (x2 - x1) * s / len), y = (int)MathRound(y1 + (y2 - y1) * s / len);
+      if(x == lx && y == ly) continue;
+      lx = x; ly = y;
+      for(int k = 0; k < w; k++)
+        {
+         if(MathAbs(x2 - x1) >= MathAbs(y2 - y1)) BlendPx(x, y - (w - 1) / 2 + k, c, 1.0);
+         else BlendPx(x - (w - 1) / 2 + k, y, c, 1.0);
+        }
+     }
+  }
+
+void FillPointer(double ax, int ay, int h, double halfW, int dir, uint c)
+  {
+   for(int j = 0; j < h; j++)
+     {
+      double half = halfW * (j + 0.5) / h;
+      int y = ay + dir * j - (dir < 0 ? 1 : 0);
+      for(int x = (int)MathFloor(ax - half - 1); x <= (int)MathCeil(ax + half + 1); x++)
+        {
+         double cov = MathMax(0.0, MathMin(1.0, half + 0.5 - MathAbs(x + 0.5 - ax)));
+         if(cov > 0.0) BlendPx(x, y, c, cov);
+        }
+     }
+  }
+
+//--- tailles de texte de TradingView (mesurées sur les captures), en dixièmes de point
+void SetFont(int size, bool sym)
+  {
+   int s = size == tiny ? -45 : size == small ? -60 : -75;
+   gCv.FontSet(sym ? "Arial" : InpFont, s);
+  }
+
+//--- étiquette à pointe : texte en Trebuchet MS suivi du symbole ▲ / ▼ en Arial
+void DrawLabel(const DLabel &lb)
+  {
+   double ax = XofBar(lb.x);
+   if(ax < -300 || ax > gW + 300) return;
+   double ay = YofPrice(lb.y);
+   if(ay < -100 || ay > gHh + 100) return;
+   int tw = 0, th = 0, sw = 0, sh = 0;
+   SetFont(lb.size, false);
+   gCv.TextSize(lb.text, tw, th);
+   if(lb.sym != "") { SetFont(lb.size, true); gCv.TextSize(lb.sym, sw, sh); }
+   int gap = lb.sym != "" ? Px(3) : 0;
+   int padX = Px(3), padY = Px(1), ph = Px(3);
+   int w = tw + gap + sw + 2 * padX, h = MathMax(th, sh) + 2 * padY;
+   int iy = (int)MathRound(ay);
+   int x1 = (int)MathRound(ax - w / 2.0);
+   int top = lb.style == LS_UP ? iy + ph : iy - ph - h;
+   if(((lb.bg >> 24) & 0xFF) > 0)
+     {
+      FillPointer(ax, iy, ph + 1, ph, lb.style == LS_UP ? 1 : -1, lb.bg);
+      FillRoundRect(x1, top, x1 + w, top + h, 2.0 * gDpi, lb.bg);
+     }
+   SetFont(lb.size, false);
+   gCv.TextOut(x1 + padX, top + h / 2, lb.text, lb.tc, TA_LEFT | TA_VCENTER);
+   if(lb.sym != "")
+     {
+      SetFont(lb.size, true);
+      gCv.TextOut(x1 + padX + tw + gap, top + h / 2, lb.sym, lb.tc, TA_LEFT | TA_VCENTER);
+     }
+  }
+
+void Render(CState &S)
+  {
+   int W = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
+   int H = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS, 0);
+   if(W <= 0 || H <= 0 || gN < 2) return;
+   if(!gCvOk)
+     {
+      if(!gCv.CreateBitmapLabel(0, 0, gName, 0, 0, W, H, COLOR_FORMAT_ARGB_NORMALIZE)) return;
+      gCvOk = true;
+      ObjectSetInteger(0, gName, OBJPROP_HIDDEN, true);
+      ObjectSetInteger(0, gName, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, gName, OBJPROP_BACK, false);
+     }
+   else if(gCv.Width() != W || gCv.Height() != H)
+      gCv.Resize(W, H);
+   gW = W; gHh = H;
+   gCv.Erase(0);
+
+   //--- correspondance bougie/prix -> pixels, depuis la première bougie visible
+   int firstShift = (int)ChartGetInteger(0, CHART_FIRST_VISIBLE_BAR);
+   int bars = Bars(_Symbol, PERIOD_CURRENT);
+   firstShift = MathMax(1, MathMin(firstShift, bars - 1));
+   double pMax = ChartGetDouble(0, CHART_PRICE_MAX, 0), pMin = ChartGetDouble(0, CHART_PRICE_MIN, 0);
+   int xa, ya, xb, yb;
+   if(pMax <= pMin || !ChartTimePriceToXY(0, 0, iTime(_Symbol, PERIOD_CURRENT, firstShift), pMax, xa, ya)
+      || !ChartTimePriceToXY(0, 0, iTime(_Symbol, PERIOD_CURRENT, firstShift - 1), pMin, xb, yb))
+     { gCv.Update(true); return; }
+   gT0 = (gN - 1) - firstShift;                   // indice local de la première bougie visible
+   gX0 = xa;
+   gSp = xb - xa;
+   if(gSp <= 0) gSp = 1 << (int)ChartGetInteger(0, CHART_SCALE);
+   gPMax = pMax; gY0 = ya; gKy = (double)(yb - ya) / (pMax - pMin);
+   int lw = Wpx(1);
+
+   //--- boîtes (bord de BorderWidth px)
+   for(int i = 0; i < ArraySize(S.boxes); i++)
+     {
+      if(!S.boxes[i].alive) continue;
+      int x1 = (int)MathRound(XofBar(S.boxes[i].x1));
+      int x2 = (int)MathRound(XofBar(S.boxes[i].x2));
+      if(x2 < x1) { int s = x1; x1 = x2; x2 = s; }
+      if(x2 < 0 || x1 > W) continue;
+      int y1 = (int)MathRound(YofPrice(MathMax(S.boxes[i].top, S.boxes[i].bot)));
+      int y2 = (int)MathRound(YofPrice(MathMin(S.boxes[i].top, S.boxes[i].bot)));
+      if(y2 < 0 || y1 > H) continue;
+      int bw = S.boxes[i].bw > 0 ? Wpx(S.boxes[i].bw) : 0;
+      bool border = bw > 0 && ((S.boxes[i].bd >> 24) & 0xFF) > 0;
+      if(border)
+        {
+         FillRect(x1 + bw, y1 + bw, x2 - bw, y2 - bw, S.boxes[i].bg);
+         FillRect(x1, y1, x2, y1 + bw - 1, S.boxes[i].bd);
+         FillRect(x1, y2 - bw + 1, x2, y2, S.boxes[i].bd);
+         FillRect(x1, y1 + bw, x1 + bw - 1, y2 - bw, S.boxes[i].bd);
+         FillRect(x2 - bw + 1, y1 + bw, x2, y2 - bw, S.boxes[i].bd);
+        }
+      else
+         FillRect(x1, y1, x2, y2, S.boxes[i].bg);
+     }
+   //--- lignes (milieux)
+   for(int i = 0; i < ArraySize(S.lines); i++)
+     {
+      if(!S.lines[i].alive) continue;
+      double x1 = MathRound(XofBar(S.lines[i].x1)), x2 = MathRound(XofBar(S.lines[i].x2));
+      double y1 = MathRound(YofPrice(S.lines[i].y1)), y2 = MathRound(YofPrice(S.lines[i].y2));
+      if((y1 < -50 && y2 < -50) || (y1 > H + 50 && y2 > H + 50)) continue;
+      DrawLine(x1, y1, x2, y2, S.lines[i].style, lw, S.lines[i].clr);
+     }
+   //--- étiquettes
+   for(int i = 0; i < ArraySize(S.labels); i++)
+      if(S.labels[i].alive) DrawLabel(S.labels[i]);
+   gCv.Update(true);
+   gLastRender = GetTickCount();
+   gDirty = false;
+  }
+//+------------------------------------------------------------------+
