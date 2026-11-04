@@ -1,12 +1,12 @@
 ﻿// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
 // © LuxAlgo
-// Combinaison de « Liquidity Sweeps [LuxAlgo] » et « Liquidity Swings [LuxAlgo] », codes d'origine
+// Combinaison de « Liquidity Sweeps [LuxAlgo] », « Liquidity Swings [LuxAlgo] » et « BOS & CHoCH », codes d'origine
 // repris tels quels. Seules adaptations, marquées [CX] : noms en double renommés pour coexister
 // dans un seul script (ph / pl → sw_ph / sw_pl et h, l, v → sw_h, sw_l, sw_v dans Liquidity Swings ;
 // n = bar_index défini une seule fois). Même licence, usage personnel non commercial.
 
 //@version=5
-indicator("CX Liquidity Sweeps & Swings", "CX Sweeps & Swings", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
+indicator("CX Liquidity Sweeps, Swings & Structure", "CX Sweeps & Swings", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
 
 // =====================================================================================
 //  1. LIQUIDITY SWEEPS [LuxAlgo]
@@ -377,3 +377,116 @@ if showBtm
     set_label(pl_count, pl_vol, pl_x1, pl_btm, btmCss, label.style_label_up)
 
 //-----------------------------------------------------------------------------}
+
+// =====================================================================================
+//  3. BOS & CHoCH
+//  [CX] code d'origine (Pine v6) repris tel quel dans ce script v5 ; noms en double
+//  renommés (length → bc_length, ph / pl → bc_ph / bc_pl) et réglages rangés dans le
+//  groupe « BOS & CHoCH ».
+// =====================================================================================
+// --- INPUTS ---
+bc_length = input.int(5, minval = 1, title = 'Pivot Length', group = 'BOS & CHoCH')
+showLabels = input.bool(true, title = 'Show Labels', group = 'BOS & CHoCH')
+
+// Colors
+colBull = input.color(#089981, 'Bullish Color', group = 'BOS & CHoCH')
+colBear = input.color(#f23645, 'Bearish Color', group = 'BOS & CHoCH')
+
+// Alerts
+alertOnBOS = input.bool(true, 'Alert on BOS', group = 'Alerts')
+alertOnCHoCH = input.bool(true, 'Alert on CHoCH', group = 'Alerts')
+
+// --- LOGIC ---
+
+// Detect Pivot Highs and Lows
+bc_ph = ta.pivothigh(high, bc_length, bc_length)
+bc_pl = ta.pivotlow(low, bc_length, bc_length)
+
+// Variables
+var float swingHighPrice = na
+var int swingHighIndex = na
+var float swingLowPrice = na
+var int swingLowIndex = na
+
+// Trend State: 0 = Start, 1 = Bullish, -1 = Bearish
+var int trend = 0
+
+// Updating Swing Points
+if not na(bc_ph)
+    swingHighPrice := high[bc_length]
+    swingHighIndex := bar_index[bc_length]
+    swingHighIndex
+
+if not na(bc_pl)
+    swingLowPrice := low[bc_length]
+    swingLowIndex := bar_index[bc_length]
+    swingLowIndex
+
+// --- DRAWING FUNCTION ---
+drawLine(x1, y1, x2, y2, color, txt, isBearish) =>
+    line.new(x1, y1, x2, y2, color = color, style = line.style_solid, width = 1)
+    if showLabels
+        int midpoint = int(math.avg(x1, x2))
+        lblStyle = isBearish ? label.style_label_up : label.style_label_down
+        label.new(midpoint, y1, text = txt, color = color.new(color.white, 100), style = lblStyle, textcolor = color, size = size.tiny)
+
+// --- EVENT FLAGS (reset every bar) ---
+bullBOS = false
+bearBOS = false
+bullCHoCH = false
+bearCHoCH = false
+
+// --- BREAKOUT LOGIC ---
+
+// Bullish Break (Price closes above Swing High)
+if not na(swingHighPrice) and close > swingHighPrice
+    if trend == -1
+        drawLine(swingHighIndex, swingHighPrice, bar_index, swingHighPrice, colBull, 'CHoCH', false)
+        trend := 1
+        bullCHoCH := true
+        bullCHoCH
+    else
+        drawLine(swingHighIndex, swingHighPrice, bar_index, swingHighPrice, colBull, 'BOS', false)
+        trend := 1
+        bullBOS := true
+        bullBOS
+    swingHighPrice := na
+    swingHighPrice
+
+// Bearish Break (Price closes below Swing Low)
+if not na(swingLowPrice) and close < swingLowPrice
+    if trend == 1
+        drawLine(swingLowIndex, swingLowPrice, bar_index, swingLowPrice, colBear, 'CHoCH', true)
+        trend := -1
+        bearCHoCH := true
+        bearCHoCH
+    else
+        drawLine(swingLowIndex, swingLowPrice, bar_index, swingLowPrice, colBear, 'BOS', true)
+        trend := -1
+        bearBOS := true
+        bearBOS
+    swingLowPrice := na
+    swingLowPrice
+
+// --- ALERTS ---
+bosEvent = bullBOS or bearBOS
+chochEvent = bullCHoCH or bearCHoCH
+
+// Dynamic alerts -> create with "Any alert() function call"
+if alertOnBOS and bullBOS
+    alert('Bullish BOS on ' + syminfo.ticker + ' (' + timeframe.period + ') @ ' + str.tostring(close, format.mintick), alert.freq_once_per_bar)
+if alertOnBOS and bearBOS
+    alert('Bearish BOS on ' + syminfo.ticker + ' (' + timeframe.period + ') @ ' + str.tostring(close, format.mintick), alert.freq_once_per_bar)
+if alertOnCHoCH and bullCHoCH
+    alert('Bullish CHoCH on ' + syminfo.ticker + ' (' + timeframe.period + ') @ ' + str.tostring(close, format.mintick), alert.freq_once_per_bar)
+if alertOnCHoCH and bearCHoCH
+    alert('Bearish CHoCH on ' + syminfo.ticker + ' (' + timeframe.period + ') @ ' + str.tostring(close, format.mintick), alert.freq_once_per_bar)
+
+// Static alert conditions -> selectable from the alert dropdown
+alertcondition(bosEvent, 'BOS', 'BOS detected on {{ticker}} ({{interval}}) @ {{close}}')
+alertcondition(chochEvent, 'CHoCH', 'CHoCH detected on {{ticker}} ({{interval}}) @ {{close}}')
+alertcondition(bosEvent or chochEvent, 'BOS or CHoCH', 'Structure break detected on {{ticker}} ({{interval}}) @ {{close}}')
+alertcondition(bullBOS, 'Bullish BOS', 'Bullish BOS on {{ticker}} ({{interval}}) @ {{close}}')
+alertcondition(bearBOS, 'Bearish BOS', 'Bearish BOS on {{ticker}} ({{interval}}) @ {{close}}')
+alertcondition(bullCHoCH, 'Bullish CHoCH', 'Bullish CHoCH on {{ticker}} ({{interval}}) @ {{close}}')
+alertcondition(bearCHoCH, 'Bearish CHoCH', 'Bearish CHoCH on {{ticker}} ({{interval}}) @ {{close}}')
