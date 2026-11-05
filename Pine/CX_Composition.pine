@@ -1182,9 +1182,9 @@ if rtBullTrap and not rtActiveBull and rtAllowedByLimits
         rtRateBull := math.round((rtTotalSuccess / rtTotalAttempts) * 100)
         rtProbBull := str.tostring(rtRateBull) + "% WIN PROB"
 
-    // [CX] flèche du type IMFVG, puis texte TRAP + win-prob sous la bougie
+    // [CX] flèche du type IMFVG, puis texte TRAP + win-prob juste sous la flèche (même ancrage)
     label.new(bar_index, low, '▲', color = color(na), textcolor = rtColorUp, style = label.style_label_up, size = size.small)
-    label.new(x=bar_index, y=low-rtAtr, text="TRAP\n" + rtProbBull, style=label.style_label_up, color=color.new(rtColorUp, 100), textcolor=rtColorUp, size=rtLabelSizeSelected, tooltip = "Win Probability: " + str.tostring(rtRateBull) + "% · RSI " + str.tostring(math.round(rtRsi)))
+    label.new(x=bar_index, y=low, text="\n\nTRAP\n" + rtProbBull, style=label.style_label_up, color=color.new(rtColorUp, 100), textcolor=rtColorUp, size=rtLabelSizeSelected, tooltip = "Win Probability: " + str.tostring(rtRateBull) + "% · RSI " + str.tostring(math.round(rtRsi)))
 
 if rtActiveBull
     rtBullStop.set_x2(bar_index+10)
@@ -1228,9 +1228,9 @@ if rtBearTrap and not rtActiveBear and rtAllowedByLimits
         rtRateBear := math.round((rtTotalSuccess / rtTotalAttempts) * 100)
         rtProbBear := str.tostring(rtRateBear) + "% WIN PROB"
 
-    // [CX] flèche du type IMFVG, puis texte TRAP + win-prob au-dessus de la bougie
+    // [CX] flèche du type IMFVG, puis texte TRAP + win-prob juste au-dessus de la flèche (même ancrage)
     label.new(bar_index, high, '▼', color = color(na), textcolor = rtColorDn, style = label.style_label_down, size = size.small)
-    label.new(x=bar_index, y=high+rtAtr, text=rtProbBear + "\nTRAP", style=label.style_label_down, color=color.new(rtColorUp, 100), textcolor=rtColorDn, size=rtLabelSizeSelected, tooltip = "Win Probability: " + str.tostring(rtRateBear) + "% · RSI " + str.tostring(math.round(rtRsi)))
+    label.new(x=bar_index, y=high, text=rtProbBear + "\nTRAP\n\n", style=label.style_label_down, color=color.new(rtColorUp, 100), textcolor=rtColorDn, size=rtLabelSizeSelected, tooltip = "Win Probability: " + str.tostring(rtRateBear) + "% · RSI " + str.tostring(math.round(rtRsi)))
 
 if rtActiveBear
     rtBearStop.set_x2(bar_index+10)
@@ -1576,8 +1576,8 @@ if sw_showBtm
 //  Le couplage automatique « Governing timeframe » est remplacé par ces deux unités fixes.
 //  Chaque panneau garde : étiquettes C1/C2, balayages C2 entre bougies, gap boxes.
 //  [CX] Repris de « CX Écran 1 · Contexte » (partie 3) : panneau seul, séparateurs verticaux
-//  retirés. Taille « Graphique » (par défaut) : chaque bougie du panneau a la largeur d'une bougie
-//  du graphique (M1). Ajouts de l'écran 1 (partie 4) : range des bougies H4 / H1 en formation et
+//  retirés. Taille « Graphique » (par défaut) : chaque bougie du panneau occupe une bougie du
+//  graphique, corps tracé en trait épais (réglable). Ajouts de l'écran 1 (partie 4) : range des bougies H4 / H1 en formation et
 //  haut / bas de la H4 précédente.
 //  Un panneau n'est tracé que si son unité est supérieure à celle du graphique.
 
@@ -1593,6 +1593,7 @@ grpP = "HTF panel"
 showPan = input.bool(true, "Governing candle panel", group = grpP, tooltip = "Les bougies H4 et H1 agrégées sur les bougies du graphique, tracées à droite du prix. La bougie la plus récente est celle en formation.")
 panN    = input.int(5, "  - candles shown", minval = 2, maxval = 14, group = grpP)
 panSize = input.string("Graphique", "  - size / gap from price", options = ["Graphique", "Small", "Medium", "Large"], inline = "p1", group = grpP, tooltip = "Graphique : largeur d'une bougie du graphique (M1).")
+panBodyW = input.int(5, "  - épaisseur du corps (taille Graphique, pixels)", minval = 1, maxval = 20, group = grpP)
 panOff  = input.int(10, "", minval = 0, maxval = 100, inline = "p1", group = grpP)
 panGap  = input.int(6, "  - écart entre les 2 panneaux (barres)", minval = 1, maxval = 50, group = grpP)
 panBull = input.color(#4caf50, "  - body  bull / bear", inline = "p2", group = grpP)
@@ -1698,10 +1699,9 @@ var array<label> panLb = array.new<label>()
 int pnW    = panSize == "Large" ? 5 : panSize == "Medium" ? 3 : 1
 int pnStep = panSize == "Graphique" ? 2 : pnW + 2
 int pnHalf = math.max(1, math.round(pnW / 2))
-// [CX] abscisses en temps : la bougie du panneau peut ainsi avoir la largeur d'une bougie du graphique
-int pnMs   = timeframe.in_seconds() * 1000
-int pnHw   = panSize == "Graphique" ? int(pnMs * 0.35) : pnHalf * pnMs
-f_pnT(int bx) => time + (bx - bar_index) * pnMs
+// [CX] taille « Graphique » : corps tracé comme un trait épais centré sur une bougie du graphique
+// (abscisses en bar_index : un temps futur tombe dans la pause de séance et décale le panneau)
+bool pnChart = panSize == "Graphique"
 
 // Trace un panneau à partir de l'abscisse pnX0. Renvoie le nombre de bougies tracées.
 f_drawPanel(GovAgg g, int pnX0) =>
@@ -1738,13 +1738,15 @@ f_drawPanel(GovAgg g, int pnX0) =>
                     if pbt == pbb
                         pbt := pbb + syminfo.mintick
                     bool pBull = pb >= pa
-                    int pct = f_pnT(pcx)
-                    panBx.push(box.new(pct - pnHw, pbt, pct + pnHw, pbb, xloc = xloc.bar_time, bgcolor = pBull ? panBull : panBear, border_color = pBull ? panBdU : panBdD, border_width = 1))
-                    panLn.push(line.new(pct, ph, pct, pbt, xloc = xloc.bar_time, color = pBull ? panWkU : panWkD, width = 1))
-                    panLn.push(line.new(pct, pbb, pct, pl, xloc = xloc.bar_time, color = pBull ? panWkU : panWkD, width = 1))
+                    panLn.push(line.new(pcx, ph, pcx, pbt, color = pBull ? panWkU : panWkD, width = 1))
+                    panLn.push(line.new(pcx, pbb, pcx, pl, color = pBull ? panWkU : panWkD, width = 1))
+                    if pnChart
+                        panLn.push(line.new(pcx, pbt, pcx, pbb, color = pBull ? panBull : panBear, width = panBodyW))
+                    else
+                        panBx.push(box.new(pcx - pnHalf, pbt, pcx + pnHalf, pbb, bgcolor = pBull ? panBull : panBear, border_color = pBull ? panBdU : panBdD, border_width = 1))
                     if pi < 2
-                        panLb.push(label.new(pct, pl, pi == 0 ? "C2" : "C1", xloc = xloc.bar_time, style = label.style_label_up, color = color.new(color.gray, 100), textcolor = panWick, size = f_lsz(szC2)))
-            panLb.push(label.new(f_pnT(pnX0 + math.round((pnN - 1) * pnStep / 2.0)), pH.max(), g.tag, xloc = xloc.bar_time, style = label.style_label_down, color = color.new(color.gray, 100), textcolor = panWick, size = f_lsz(szCs)))
+                        panLb.push(label.new(pcx, pl, pi == 0 ? "C2" : "C1", style = label.style_label_up, color = color.new(color.gray, 100), textcolor = panWick, size = f_lsz(szC2)))
+            panLb.push(label.new(pnX0 + math.round((pnN - 1) * pnStep / 2.0), pH.max(), g.tag, style = label.style_label_down, color = color.new(color.gray, 100), textcolor = panWick, size = f_lsz(szCs)))
             if panC2
                 for pi = 0 to pnN - 2
                     float pnc = pi >= 1 ? pC.get(pi - 1) : na
@@ -1753,9 +1755,9 @@ f_drawPanel(GovAgg g, int pnX0) =>
                     int ku = f_c2k(false, pL.get(pi), pC.get(pi), pL.get(pi + 1), useC2x, pnc, pH.get(pi), pO.get(pi))
                     int kd = f_c2k(true,  pH.get(pi), pC.get(pi), pH.get(pi + 1), useC2x, pnc, pL.get(pi), pO.get(pi))
                     if ku > 0
-                        panLn.push(line.new(f_pnT(pxp), pL.get(pi + 1), f_pnT(pxn), pL.get(pi + 1), xloc = xloc.bar_time, color = color.new(cUp, opac), width = swW, style = ku == 2 ? line.style_dashed : line.style_solid))
+                        panLn.push(line.new(pxp, pL.get(pi + 1), pxn, pL.get(pi + 1), color = color.new(cUp, opac), width = swW, style = ku == 2 ? line.style_dashed : line.style_solid))
                     if kd > 0
-                        panLn.push(line.new(f_pnT(pxp), pH.get(pi + 1), f_pnT(pxn), pH.get(pi + 1), xloc = xloc.bar_time, color = color.new(cDn, opac), width = swW, style = kd == 2 ? line.style_dashed : line.style_solid))
+                        panLn.push(line.new(pxp, pH.get(pi + 1), pxn, pH.get(pi + 1), color = color.new(cDn, opac), width = swW, style = kd == 2 ? line.style_dashed : line.style_solid))
             if panFvg and pnN >= 3
                 for pj = 0 to pnN - 3
                     float g1o = pO.get(pj)
@@ -1770,9 +1772,9 @@ f_drawPanel(GovAgg g, int pnX0) =>
                         int gxn = pnX0 + (pnN - 1 - pj) * pnStep
                         int gxp = pnX0 + (pnN - 3 - pj) * pnStep
                         if g1l > g2h and math.min(g1o, g1c) > math.max(g2o, g2c)
-                            panBx.push(box.new(f_pnT(gxp), g1l, f_pnT(gxn), g2h, xloc = xloc.bar_time, bgcolor = cPanFv, border_color = color.new(cPanFv, cPanFvB)))
+                            panBx.push(box.new(gxp, g1l, gxn, g2h, bgcolor = cPanFv, border_color = color.new(cPanFv, cPanFvB)))
                         if g1h < g2l and math.max(g1o, g1c) < math.min(g2o, g2c)
-                            panBx.push(box.new(f_pnT(gxp), g2l, f_pnT(gxn), g1h, xloc = xloc.bar_time, bgcolor = cPanFv, border_color = color.new(cPanFv, cPanFvB)))
+                            panBx.push(box.new(gxp, g2l, gxn, g1h, bgcolor = cPanFv, border_color = color.new(cPanFv, cPanFvB)))
             drawn := pnN
     drawn
 
