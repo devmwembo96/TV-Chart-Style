@@ -1,7 +1,7 @@
 ﻿//@version=6
 // ══════════════════════════════════════════════════════════════════════════════════════════════════ //
 //  CX COMPOSITION : SMC + IMFVG + Reversal Trap + FVG Sessions + Liquidity Swings + panneau HTF PO3
-//                   + ICT HTF FVGs v2
+//                   + ICT HTF FVGs v2 + Liquidity Sweeps + Liquidity Pools
 //
 //   PARTIE 1  : Smart Money Concepts [LuxAlgo]                 © LuxAlgo   (CC BY-NC-SA 4.0) — intact
 //   PARTIE 2  : FVG Instantaneous Mitigation Signals [LuxAlgo] © LuxAlgo   (CC BY-NC-SA 4.0) — intact
@@ -16,6 +16,9 @@
 //               bougies à la taille de celles du graphique, range H4 / H1 en formation, H4 préc H / L.
 //   PARTIE 6  : ICT HTF FVGs v2 (fadi)                       © fadizeidan (MPL 2.0) — intact, réglages
 //               rangés dans le groupe « ICT HTF FVGs (fadi) ».
+//   PARTIE 7  : Liquidity Sweeps [LuxAlgo]                     © LuxAlgo   (CC BY-NC-SA 4.0) — passé en v6,
+//               derniers sweeps seulement (40 par défaut, réglable).
+//   PARTIE 8  : Liquidity Pools [LuxAlgo]                      © LuxAlgo   (CC BY-NC-SA 4.0) — passé en v6.
 //   Retiré : Footprint Delta Auction Map [BullByte].
 //   Licences CC BY-NC-SA : usage personnel, non commercial ; ce fichier dérivé garde la même licence.
 // ══════════════════════════════════════════════════════════════════════════════════════════════════ //
@@ -2591,3 +2594,520 @@ if true// barstate.isconfirmed
                 cnt := cnt + 1
                 FVG_6.order := cnt
                 FVG_6.check(htf_6)
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+//                       PARTIE 7  —  LIQUIDITY SWEEPS [LuxAlgo]
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+// [CX] Code d'origine (Pine v5) repris en Pine v6. Adaptations : n = bar_index déjà défini plus haut
+// (même valeur), réglage « Extend » nommé ls_extend (extend est le nom des constantes extend.* de Pine),
+// et seuls les derniers sweeps restent dessinés (réglage « Sweeps kept on chart », 40 par défaut).
+//------------------------------------------------------------------------------
+//Settings
+//-----------------------------------------------------------------------------{
+len    = input.int(5, 'Swings', minval=1, group='Liquidity Sweeps')
+opt    = input.string('Only Wicks', 'options'
+       , options=['Only Wicks', 'Only Outbreaks & Retest', 'Wicks + Outbreaks & Retest'], group='Liquidity Sweeps')
+
+colBl  = input.color(#089981, 'Bull ', group='Liquidity Sweeps', inline='c1')
+colBr  = input.color(#f23645, 'Bear' , group='Liquidity Sweeps', inline='c2')
+colBl2 = input.color(#08998180,  ''  , group='Liquidity Sweeps', inline='c1')
+colBr2 = input.color(#f2364580,  ''  , group='Liquidity Sweeps', inline='c2')
+
+ls_extend = input.bool(true, 'Extend', group='Sweep Area') 
+maxB   = input.int(300, 'Max bars', minval=1, maxval=5000, group='Sweep Area')
+colBl3 = input.color(#08998141, 'Bull ', group='Sweep Area')
+colBr3 = input.color(#f2364541, 'Bear' , group='Sweep Area')
+// [CX] Limite des sweeps dessinés : TradingView garde au plus 500 boîtes et 500 lignes pour tout
+// l'indicateur et efface les plus anciennes, d'abord les boîtes d'order blocks du SMC créées à la
+// première bougie. Seuls les derniers sweeps restent donc dessinés (1 boîte et 3 lignes chacun).
+ls_maxSw = input.int(40, 'Sweeps kept on chart', minval=1, maxval=150, group='Sweep Area', tooltip="Nombre de sweeps récents gardés sur le graphique. Plus haut : plus d'historique, mais les autres parties de l'indicateur risquent de perdre leurs boîtes et lignes (limite TradingView de 500 par type).")
+var array<line> ls_lines = array.new<line>()
+var array<box>  ls_boxes = array.new<box>()
+ls_keepL(line ln) =>
+    ls_lines.push(ln)
+    if ls_lines.size() > ls_maxSw * 3
+        line.delete(ls_lines.shift())
+    ln
+ls_keepB(box bx) =>
+    ls_boxes.push(bx)
+    if ls_boxes.size() > ls_maxSw
+        box.delete(ls_boxes.shift())
+    bx
+
+oW = opt == 'Only Wicks'
+oO = opt == 'Only Outbreaks & Retest'
+WO = opt == 'Wicks + Outbreaks & Retest'
+
+// [CX] n = bar_index : déjà défini par IMFVG (même valeur)
+
+//-----------------------------------------------------------------------------}      
+//UDT's
+//-----------------------------------------------------------------------------{
+type piv
+    float prc // price
+    int   bix // bar_index
+    bool  brk // broken
+    bool  mit // mitigated
+    bool  tak // taken
+    bool  wic // wick
+    line  lin 
+
+type boxBr 
+    box  bx 
+    line ln
+    bool br
+    int  dr
+
+//-----------------------------------------------------------------------------}      
+//Variables
+//-----------------------------------------------------------------------------{
+var array< piv >aPivH  = array.new< piv >(1, piv.new  ())
+var array< piv >aPivL  = array.new< piv >(1, piv.new  ())
+var array<boxBr>aBoxBr = array.new<boxBr>(1, boxBr.new())
+
+//-----------------------------------------------------------------------------}      
+//Methods - functions
+//-----------------------------------------------------------------------------{
+method n(float piv) => bool out = not na(piv)
+
+method p(piv piv, float val) => float out = (100 / piv.prc * val) - 100
+
+method l(piv get, color c, string s='sd') => 
+    style = switch s 
+        'dt' => line.style_dotted
+        'ds' => line.style_dashed
+        =>      line.style_solid 
+    ls_keepL(line.new(get.bix, get.prc, n, get.prc, color=c, style = style))
+
+method br(piv get, color c3, color c, int d) =>
+    y1 = d == 1 ? high : get.prc
+    y2 = d == 1 ? get.prc : low
+    boxBr.new( 
+     ls_keepB(box.new(n -1, y1, n +1, y2
+     , border_color
+     = color.new(
+       na, na   )
+     , bgcolor=c3))
+     , ls_keepL(line.new(n , y1, n, y2, color=c, width=3))
+     , false
+     , d)
+
+lnDot(y, c) => ls_keepL(line.new(n, y, n+3, y, color=c, style=line.style_dotted))
+
+//-----------------------------------------------------------------------------}      
+//Execution
+//-----------------------------------------------------------------------------{
+ph = ta.pivothigh(len, len)
+pl = ta.pivotlow (len, len)
+
+if ph.n() 
+    aPivH.unshift(piv.new(ph, n -len, false, false, false, false))
+
+if pl.n() 
+    aPivL.unshift(piv.new(pl, n -len, false, false, false, false)) 
+
+for i = aPivH.size() -1 to 0
+    get = aPivH.get(i)
+    if not get.mit
+        if not get.brk
+            if close > get.prc 
+                if not oW
+                    get.brk := true
+                else 
+                    get.mit := true
+            if not oO and not get.wic 
+                if high > get.prc and close < get.prc                   
+                    aBoxBr.unshift(get.br(colBr3, colBr, 1))       
+                    get.l(colBr2, 'dt'), lnDot(low, colBr)
+                    get.wic := true  
+        else 
+            if close < get.prc 
+                get.mit := true
+            if not oW and low < get.prc and close > get.prc                    
+                aBoxBr.unshift(get.br(colBl3, colBl, -1))    
+                get.l(colBl2, 'ds'), lnDot(high, colBl)
+                get.tak := true 
+
+    if n - get.bix > 2000 or get.mit or get.tak 
+        aPivH.remove(i).lin.delete()
+
+for i = aPivL.size() -1 to 0
+    get = aPivL.get(i)
+    if not get.mit
+        if not get.brk
+            if close < get.prc 
+                if not oW
+                    get.brk := true
+                else 
+                    get.mit := true
+            if not oO and not get.wic 
+                if low < get.prc and close > get.prc                              
+                    aBoxBr.unshift(get.br(colBl3, colBl, -1))     
+                    get.l(colBl2, 'dt'), lnDot(high, colBl)
+                    get.wic := true 
+        else 
+            if close > get.prc 
+                get.mit := true
+            if not oW and high > get.prc and close < get.prc                     
+                aBoxBr.unshift(get.br(colBr3, colBr, 1))    
+                get.l(colBr2, 'ds'), lnDot(low, colBr)
+                get.tak := true  
+
+    if n - get.bix > 2000 or get.mit or get.tak 
+        aPivL.remove(i).lin.delete()
+
+if ls_extend
+    for bx in aBoxBr 
+        if not bx.br and n - bx.bx.get_left() -1 <= maxB 
+            bx.bx.set_right(bar_index)
+            if bx.dr == -1 and close < bx.bx.get_bottom() 
+                bx.br := true 
+            if bx.dr ==  1 and close > bx.bx.get_top   () 
+                bx.br := true 
+
+//-----------------------------------------------------------------------------}
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+//                       PARTIE 8  —  LIQUIDITY POOLS [LuxAlgo]
+// ══════════════════════════════════════════════════════════════════════════════════════════════════ //
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+// [CX] Code d'origine (Pine v5) repris en Pine v6. Adaptations : tableaux vides en array.new<zn>(),
+// historique des champs écrit (hst[1]).t au lieu de hst.t[1] (règle de Pine v6, même valeur),
+// croisements ta.crossover calculés à chaque bougie (v6 évalue « and » de façon paresseuse),
+// groupe « Style » renommé « Liquidity Pools · Style » (IMFVG a déjà un groupe « Style »), réglages
+// de volume rangés dans « Liquidity Identification ».
+//---------------------------------------------------------------------------------------------------------------------}
+//Inputs
+//---------------------------------------------------------------------------------------------------------------------{
+
+cNum = input.int(2, minval = 2, title = "Zone Contact Amount", group = "Liquidity Identification", tooltip = "The number of times price must bounce from this zone before considering it as a liquidity pool.  \n\nHigher == Less Zones that are 'More Precise'\nLower == More Zones that are 'Less precise'")
+gapCount = input.int(5, minval = 0, title = "Bars Required Between Each Contact", group = "Liquidity Identification", tooltip = "The number of bars to wait before checking for another zone contact.")
+wait = input.int(10, title = "Confirmation Bars", tooltip = "Used to Confirm Zones for Validity. \n Waits [X] Bars before drawing Zone.", group = "Liquidity Identification")
+
+volTog = input.bool(true, title = "Display Volume Labels", group = "Liquidity Identification")
+volSize = str.lower(input.string("Small", title = "Volume Label Size", options = ["Tiny","Small","Normal","Large","Huge"], group = "Liquidity Identification"))
+
+bullColor = input.color(color.new(#089981,80), title = "Bull Zone Color  ", group = "Liquidity Pools · Style") 
+bearColor = input.color(color.new(#f23645,80), title = "Bear Zone Color", group = "Liquidity Pools · Style")
+canTog = input.bool(false, title = "Fill Candles Inside Zones", group = "Liquidity Pools · Style", tooltip = "Fills Candles that are inside the last liquidity zone.\n\nNOTE: The candles will only be filled AFTER the Zone is generated. Candles fills will not overlap the zone it is referencing.")
+bullCanColor = input.color(#089981, title = "Bull Candle Fill  ", group = "Liquidity Pools · Style") 
+bearCanColor = input.color(#f23645, title = "Bear Candle Fill", group = "Liquidity Pools · Style")
+
+invis = color.rgb(0,0,0,100)
+
+//---------------------------------------------------------------------------------------------------------------------}
+//UDTs (User-Defined Types)
+//---------------------------------------------------------------------------------------------------------------------{
+
+type data
+    float h
+    float t
+    float b
+    float l
+    int bi
+
+type zn
+    box bx
+    int state
+    line ln
+    float vol
+    label lab
+
+//---------------------------------------------------------------------------------------------------------------------}
+//Variables
+//---------------------------------------------------------------------------------------------------------------------{
+
+//Candle (Body) Top/Bottom
+c_top = math.max(open,close)
+c_bot = math.min(open,close)
+
+//Current Candle Data
+cur = data.new(high,c_top,c_bot,low,bar_index)
+
+//Highest and Lowest Candle Data
+var data hst = data.new(high,c_top,c_bot,low,bar_index)
+var data lst = data.new(high,c_top,c_bot,low,bar_index)
+
+//High/Low Contact Counts
+var int h_count = 0
+var int l_count = 0
+ 
+//Last Wick Bar Indexes
+var int last_h_wick = bar_index
+var int last_l_wick = bar_index
+
+//Historical Zone Array (Un-Mitigated)
+var bull_zones = array.new<zn>()
+var bear_zones = array.new<zn>()
+
+//Running Zones
+var zn h_zn = zn.new(na,na,na,na,na)
+var zn l_zn = zn.new(na,na,na,na,na)
+
+//Plot Candle Fill Points
+float g_o = na
+float g_h = na
+float g_l = na
+float g_c = na
+
+float r_o = na
+float r_h = na
+float r_l = na
+float r_c = na
+
+//Running Volume Totals
+var float hi_vol = 0
+var float lo_vol = 0
+//---------------------------------------------------------------------------------------------------------------------}
+//Functions
+//---------------------------------------------------------------------------------------------------------------------{
+
+//Get Candle Fill Points
+get_cfp(_bx) =>
+    top = _bx.get_top()
+    bot = _bx.get_bottom()
+    _o = c_top < bot ? bot : c_top > top ? top : c_top
+    _h = high < bot ? bot : high > top ? top : high
+    _l = low < bot ? bot : low > top ? top : low
+    _c = c_bot < bot ? bot : c_bot > top ? top : c_bot
+    [_o,_h,_l,_c]
+
+//Get Candle Inside Volume
+get_civ(_bx) =>
+    top = _bx.get_top()
+    bot = _bx.get_bottom()
+    _r = high - low
+    _h = high > top ? top : high
+    _l = low < bot ? bot : low
+    _vol = nz((_h - _l) / _r, 1) * volume
+    _vol
+
+//---------------------------------------------------------------------------------------------------------------------}
+//Calculations
+//---------------------------------------------------------------------------------------------------------------------{
+
+//Adjusting High and Low Check Boundaries
+if (high > hst.h) and ((c_top > hst.h) or (c_top < hst.t))
+    if h_count > 1
+        lst := cur
+        lo_vol := 0
+        l_count := 0
+    hst := cur
+    hi_vol := 0
+    h_count := 1
+    last_h_wick := bar_index
+
+if (low < lst.l) and ((c_bot < lst.l) or (c_bot > lst.b))
+    if l_count > 1
+        hst := cur
+        hi_vol := 0
+        h_count := 0
+    lst := cur
+    lo_vol := 0
+    l_count := 1
+    last_l_wick := bar_index
+
+//Counting Contacts
+var int bs_hw = 0
+var int bs_lw = 0
+
+h_wick = high > hst.t and c_top <= hst.t
+l_wick = low < lst.b and c_bot >= lst.b
+
+// [CX] Pine v6 : historique pris sur l'objet puis le champ, (hst[1]).t au lieu de hst.t[1].
+// Même valeur : les champs t et b ne sont jamais modifiés après la création de l'objet.
+if (h_wick[1] and ((hst[1]).t == (hst[2]).t) and (bs_hw > gapCount))
+    h_count += 1
+    last_h_wick := bar_index[1]
+
+if (l_wick[1] and ((lst[1]).b == (lst[2]).b) and (bs_lw > gapCount))
+    l_count += 1
+    last_l_wick := bar_index[1]
+
+bs_hw := math.abs(last_h_wick - bar_index)
+bs_lw := math.abs(last_l_wick - bar_index)
+
+//High/Low Tracking for Zone Outer Extremes
+if (high > hst.h)
+    hst.h := high
+if (low < lst.l)
+    lst.l := low
+
+//---------------------------------------------------------------------------------------------------------------------}
+//Volume Tracking
+//---------------------------------------------------------------------------------------------------------------------{
+hst_vol = (math.max((high - hst.t),0) / (high-low)) * volume
+lst_vol = (math.max((lst.b - low),0)/ (high-low)) * volume
+
+hi_vol += nz(hst_vol)
+lo_vol += nz(lst_vol)
+
+//---------------------------------------------------------------------------------------------------------------------}
+//Zone Management (Creation & Merging)
+//---------------------------------------------------------------------------------------------------------------------{
+// [CX] Pine v6 évalue « and » de façon paresseuse : les croisements sont calculés à chaque bougie,
+// comme en Pine v5, puis utilisés dans les conditions.
+bool h_cross = ta.crossover(bs_hw,wait)
+bool l_cross = ta.crossover(bs_lw,wait)
+
+if (h_count >= cNum) and h_cross and (close < hst.t)
+
+    top = h_zn.bx.get_top()
+    bot = h_zn.bx.get_bottom()
+
+    if hst.bi == h_zn.bx.get_left()
+        h_zn.bx.set_top(math.max(hst.h,top))
+        h_zn.bx.set_bottom(math.min(hst.t,top))
+
+    else if (hst.h <= top) and (hst.t >= top)
+        h_zn.bx.set_right(bar_index)
+        h_zn.vol += hi_vol
+        bear_zones.push(h_zn)
+
+    else if ((hst.h > top) and (hst.t < top)) or ((hst.h > top) and (hst.t < top)) or ((hst.h > top) and (hst.t < top))
+        h_zn.bx.set_top(math.max(hst.t,top))
+        h_zn.bx.set_bottom(math.min(hst.h,top))
+        h_zn.bx.set_right(bar_index)
+        h_zn.vol += hi_vol
+        bear_zones.push(h_zn)
+
+    else
+        h_zn := zn.new(box.new(hst.bi, hst.h, bar_index, hst.t, bgcolor = bearColor, border_color = na),
+          0, 
+          line.new(hst.bi, hst.t, bar_index, na, color = color.new(bearColor,0)),
+          hi_vol, 
+          label.new(bar_index,na, color = invis, text = str.tostring(hi_vol,format.volume) + "\n", textcolor = color.new(bearColor,0), style = label.style_label_right, size = volSize,  textalign = text.align_right))
+        
+        bear_zones.push(h_zn)
+
+if (l_count >= cNum) and l_cross and (close > lst.b)
+    
+    top = l_zn.bx.get_top()
+    bot = l_zn.bx.get_bottom()
+
+    if lst.bi == l_zn.bx.get_left()
+        l_zn.bx.set_top(math.max(lst.b,top))
+        l_zn.bx.set_bottom(math.min(lst.l,bot))
+
+    else if (lst.b <= top) and (lst.l >= bot)
+        l_zn.bx.set_right(bar_index)
+        l_zn.vol += lo_vol
+        bull_zones.push(l_zn)
+
+    else if ((lst.b > top) and (lst.l < top)) or ((lst.b > bot) and (lst.l < bot)) or ((lst.b > top) and (lst.l < bot))
+        l_zn.bx.set_top(math.max(lst.b,top))
+        l_zn.bx.set_bottom(math.min(lst.l,bot))
+        l_zn.bx.set_right(bar_index)
+        l_zn.vol += lo_vol
+        bull_zones.push(l_zn)
+
+    else
+        l_zn := zn.new(box.new(lst.bi, lst.b, bar_index, lst.l, bgcolor = bullColor, border_color = na),
+          0, 
+          line.new(lst.bi, lst.b, bar_index, na, color = color.new(bullColor,0)),
+          lo_vol, 
+          label.new(bar_index,na, color = invis, text = "\n" + str.tostring(lo_vol,format.volume), textcolor = color.new(bullColor,0), style = label.style_label_right, size = volSize, textalign = text.align_right))
+        
+        bull_zones.push(l_zn)
+
+//---------------------------------------------------------------------------------------------------------------------}
+//Zone Management (Extention & Deletion)
+//---------------------------------------------------------------------------------------------------------------------{
+
+//Bull Zones
+if bull_zones.size() > 0
+    for i = bull_zones.size()-1 to 0
+    //Values    
+        z = bull_zones.get(i)
+        bot = z.bx.get_bottom()
+        top = z.bx.get_top()
+    //Zone Management
+        if (i == bull_zones.size()-1)
+        //Line Extentions
+            if (close > top)
+                z.ln.set_y1(top)
+                z.ln.set_xy2(bar_index,top)
+                if volTog
+                    z.lab.set_xy(bar_index,top)
+        //Determining Candle Fill Points
+            if ((high < top and high > bot) or (low < top and low > bot) or (high >= top and low <= bot))
+                z.vol += get_civ(z.bx)
+                if (z.bx.get_left() == l_zn.bx.get_left())
+                    [_o,_h,_l,_c] = get_cfp(l_zn.bx)
+                    g_o := _o
+                    g_h := _h
+                    g_l := _l
+                    g_c := _c
+            z.lab.set_text("\n" + str.tostring(z.vol,format.volume))
+    //Hiding Lines        
+        else if (l_zn.bx.get_bottom() > bot)
+            z.ln.set_y2(na)
+            z.lab.set_y(na)
+    //Zone Deletion 
+        if (close < bot)
+            if (z.state < 0)
+                bull_zones.remove(i)
+            z.state -= 1
+        else
+            z.state := 0
+
+//Bear Zones
+if bear_zones.size() > 0
+    for i = bear_zones.size()-1 to 0
+    //Values
+        z = bear_zones.get(i)
+        bot = z.bx.get_bottom()
+        top = z.bx.get_top()       
+    //Zone Management
+        if (i == bear_zones.size()-1)
+        //Line Extentions
+            if (close < bot)
+                z.ln.set_y1(bot)
+                z.ln.set_xy2(bar_index,bot)
+                if volTog
+                    z.lab.set_xy(bar_index,bot)
+        //Determining Candle Fill Points
+            if ((high < top and high > bot) or (low < top and low > bot) or (high >= top and low <= bot))
+                z.vol += get_civ(z.bx)
+                if (h_zn.bx.get_left() == z.bx.get_left()) 
+                    [_o,_h,_l,_c] = get_cfp(h_zn.bx)
+                    r_o := _o
+                    r_h := _h
+                    r_l := _l
+                    r_c := _c
+            z.lab.set_text(str.tostring(z.vol,format.volume) + "\n")
+    //Hiding Lines
+        else if (h_zn.bx.get_top() < bot)
+            z.ln.set_y2(na)
+            z.lab.set_y(na)
+
+    //Zone Deletion 
+        if (close > top)
+            if (z.state < 0)
+                bear_zones.remove(i)
+            z.state -= 1
+        else
+            z.state := 0
+
+//---------------------------------------------------------------------------------------------------------------------}
+//Colored Candles
+//---------------------------------------------------------------------------------------------------------------------{
+
+plotcandle((canTog?g_o:na),g_h,g_l,g_c, 
+  wickcolor = bullCanColor, 
+  color = bullCanColor, 
+  bordercolor = (g_o == g_c ? invis : bullCanColor), 
+  display = display.pane, 
+  editable = false)
+
+plotcandle((canTog?r_o:na),r_h,r_l,r_c, 
+  wickcolor = bearCanColor, 
+  color = bearCanColor, 
+  bordercolor = (r_o == r_c ? invis : bearCanColor), 
+  display = display.pane, 
+  editable = false)
+
+//---------------------------------------------------------------------------------------------------------------------}
