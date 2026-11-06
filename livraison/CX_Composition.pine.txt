@@ -19,7 +19,7 @@
 //   Licences CC BY-NC-SA : usage personnel, non commercial ; ce fichier dérivé garde la même licence.
 // ══════════════════════════════════════════════════════════════════════════════════════════════════ //
 
-indicator('CX Composition', 'CX Composition', overlay = true, max_labels_count = 500, max_lines_count = 500, max_boxes_count = 500, max_bars_back = 5000, behind_chart = false)
+indicator('CX Composition', 'CX Compo', overlay = true, max_labels_count = 500, max_lines_count = 500, max_boxes_count = 500, max_bars_back = 5000, behind_chart = false)
 
 // ══════════════════════════════════════════════════════════════════════════════════════════════════ //
 //                       PARTIE 1  —  SMART MONEY CONCEPTS [LuxAlgo]
@@ -1819,12 +1819,17 @@ h_wick = high > hst.t and c_top <= hst.t
 l_wick = low < lst.b and c_bot >= lst.b
 
 // [CX] Pine v6 : historique pris sur l'objet puis le champ, (hst[1]).t au lieu de hst.t[1].
-// Même valeur : les champs t et b ne sont jamais modifiés après la création de l'objet.
-if (h_wick[1] and ((hst[1]).t == (hst[2]).t) and (bs_hw > gapCount))
+// Même valeur : les champs t et b ne sont jamais modifiés après la création de l'objet. Sur les
+// premières bougies l'objet passé n'existe pas encore : la valeur est na, comme en Pine v5.
+float hst_t1 = na(hst[1]) ? na : (hst[1]).t
+float hst_t2 = na(hst[2]) ? na : (hst[2]).t
+float lst_b1 = na(lst[1]) ? na : (lst[1]).b
+float lst_b2 = na(lst[2]) ? na : (lst[2]).b
+if (h_wick[1] and (hst_t1 == hst_t2) and (bs_hw > gapCount))
     h_count += 1
     last_h_wick := bar_index[1]
 
-if (l_wick[1] and ((lst[1]).b == (lst[2]).b) and (bs_lw > gapCount))
+if (l_wick[1] and (lst_b1 == lst_b2) and (bs_lw > gapCount))
     l_count += 1
     last_l_wick := bar_index[1]
 
