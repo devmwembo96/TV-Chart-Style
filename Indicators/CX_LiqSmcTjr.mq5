@@ -587,7 +587,10 @@ void LsRender(CState &S, int &arr[], bool bullish, int t)
                   Ev(true, LsAlMsg + rating + " " + tip);
                double dbars = (double)(gT[bt] - gT[S.lsPool[lb].time]) / gPer;
                int xpos = dbars > 30 ? bt - 10 : (int)MathRound((S.lsPool[lb].time + bt) / 2.0);
-               S.lsPool[swing].breakLabel = S.LabelNew(P_LS, xpos, S.lsPool[lb].price, rating, clr, LS_CENTER, small);
+               //--- sur le graphique, symboles monochromes que MT5 affiche bien (l'alerte garde les emojis) :
+               //    ❄️ faible → ❄ · ✅ correct → ✔ · 🔥 fort → ★ · 💥 très fort → ✹
+               string mark = rating == "💥" ? "✹" : rating == "🔥" ? "★" : rating == "✅" ? "✔" : "❄";
+               S.lsPool[swing].breakLabel = S.LabelNew(P_LS, xpos, S.lsPool[lb].price, mark, clr, LS_CENTER, small);
               }
            }
         }
@@ -604,8 +607,8 @@ void LssBar(CState &S, int t, bool doRender)
       if(PivotHighLR(t, 1, 1)) { SHiLo h; h.price = gH[t - 1]; h.time = t - 1; Push(S.lsHLA, h); }
       if(PivotLowLR(t, 1, 1))  { SHiLo l; l.price = gL[t - 1]; l.time = t - 1; Push(S.lsLLA, l); }
      }
-   if(PivotHighLR(t, LsLeft, LsRight)) Push(S.lsBear, LsNew(S, gH[t - LsRight], t - LsRight));
-   if(PivotLowLR(t, LsLeft, LsRight))  Push(S.lsBull, LsNew(S, gL[t - LsRight], t - LsRight));
+   if(PivotHighLR(t, LsLeft, LsRight)) { int q = LsNew(S, gH[t - LsRight], t - LsRight); Push(S.lsBear, q); }
+   if(PivotLowLR(t, LsLeft, LsRight))  { int q = LsNew(S, gL[t - LsRight], t - LsRight); Push(S.lsBull, q); }
    if(doRender)                                  // barstate.islast
      {
       LsRender(S, S.lsBear, true, t);
@@ -1214,7 +1217,7 @@ void DrawLabel(const DLabel &lb, string text)
    int tw = 0, th = 0;
    bool sym = text == "▲" || text == "▼";
    SetFont(lb.size, sym);
-   if(lb.style == LS_CENTER) gCv.FontSet("Segoe UI Emoji", lb.size == tiny ? -45 : lb.size == small ? -60 : -75);
+   if(lb.style == LS_CENTER) gCv.FontSet("Segoe UI Symbol", lb.size == tiny ? -45 : lb.size == small ? -60 : -75);
    gCv.TextSize(text, tw, th);
    int ph = Px(3);
    int ix = (int)MathRound(ax), iy = (int)MathRound(ay);
