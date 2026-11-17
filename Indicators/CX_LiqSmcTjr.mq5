@@ -1,50 +1,66 @@
-﻿//+------------------------------------------------------------------+
-//| CX_SmcSweepsTjr.mq5                                              |
-//| CX Sweeps · SMC Lite · TJR : trois indicateurs TradingView       |
-//| portés fidèlement en MQL5, chacun avec sa propre logique.        |
-//|  1. Liquidity Sweeps [LuxAlgo] (CC BY-NC-SA 4.0, © LuxAlgo) :     |
-//|     balayages de pivots par mèche, cassures et retests, zones.   |
-//|  2. FluidTrades - SMC Lite (MPL 2.0, © Pmgjiv) : zones d'offre   |
-//|     et de demande sur pivots, POI, BOS, étiquettes HH/LH/HL/LL,  |
-//|     zig-zag.                                                     |
-//|  3. TJR Swing High/Low + BOS (Tom Brown, 1.3.1-dev) : swing      |
-//|     haut / bas à 2 bougies, BOS, ligne d'extension, Potential    |
-//|     BOS et compte à rebours de clôture.                          |
-//| Usage personnel, non commercial (licence CC BY-NC-SA de LuxAlgo).|
+//+------------------------------------------------------------------+
+//| CX_LiqSmcTjr.mq5                                                 |
+//| CX Liquidity · SMC Lite · TJR · IMFVG : quatre indicateurs       |
+//| TradingView portés fidèlement en MQL5 (version TradingView :     |
+//| Pine/CX_LiqSmcTjr.pine, mêmes codes d'origine).                  |
+//|  1. Liquidity Swings & Sweeps (© OutofOptions, MPL 2.0)          |
+//|  2. TJR Swing High/Low + BOS (Tom Brown, 1.3.1-dev)              |
+//|  3. FluidTrades - SMC Lite (© Pmgjiv, MPL 2.0) : textes SUPPLY,  |
+//|     DEMAND, POI et BOS masqués par défaut sur MT5.               |
+//|  4. FVG Instantaneous Mitigation Signals [LuxAlgo]              |
+//|     (CC BY-NC-SA 4.0 : usage personnel, non commercial).         |
 //| Calcul bougie par bougie comme TradingView : bougies clôturées   |
 //| une fois, bougie en cours recalculée sur une copie de l'état.    |
-//| Limite de 500 objets par type pour chaque partie, comme trois    |
-//| indicateurs TradingView séparés. Dessin CCanvas, Trebuchet MS.   |
+//| Limite de 500 objets par type pour chaque partie, comme quatre   |
+//| indicateurs TradingView séparés. Dessin CCanvas, Trebuchet MS ;  |
+//| couleur des bougies et trailing stop de l'IMFVG en tracés MT5.   |
 //+------------------------------------------------------------------+
-#property copyright   "CX Sweeps · SMC Lite · TJR"
+#property copyright   "CX Liquidity · SMC Lite · TJR · IMFVG"
 #property version     "1.00"
-#property description "Liquidity Sweeps [LuxAlgo] + FluidTrades SMC Lite + TJR Swing High/Low + BOS, affichage TradingView."
+#property description "Liquidity Swings & Sweeps + TJR Swing High/Low + BOS + FluidTrades SMC Lite + FVG Instantaneous Mitigation Signals, affichage TradingView."
 #property indicator_chart_window
-#property indicator_buffers 0
-#property indicator_plots   0
+#property indicator_buffers 7
+#property indicator_plots   2
+//--- barcolor de l'IMFVG : bougies recolorées (mêmes largeurs que celles du graphique)
+#property indicator_label1  "IMFVG barcolor"
+#property indicator_type1   DRAW_COLOR_CANDLES
+#property indicator_color1  C'8,153,129',C'242,54,69'
+//--- plot « Trailing Stop » de l'IMFVG
+#property indicator_label2  "Trailing Stop"
+#property indicator_type2   DRAW_COLOR_LINE
+#property indicator_color2  C'8,153,129',C'242,54,69'
+#property indicator_width2  1
 
 #include <Canvas\Canvas.mqh>
 
 enum ENUM_LSTYLE  { sol = 0, dsh = 1, dot = 2 };
 enum ENUM_TSIZE   { tiny = 0, small = 1, normal = 2 };
-enum ENUM_SWOPT   { OnlyWicks = 0,    // Only Wicks
-                    OnlyOutbreaks = 1, // Only Outbreaks & Retest
-                    WicksOutbreaks = 2 // Wicks + Outbreaks & Retest
-                  };
 enum ENUM_EXT     { ext1 = 1, ext2 = 2, ext3 = 3 };
+enum ENUM_TSRESET { EverySignals = 0,  // Every Signals
+                    InverseSignals = 1 // Inverse Signals
+                  };
 
-//--- 1. Liquidity Sweeps [LuxAlgo]
-input group "Liquidity Sweeps"
-input bool        SwOn     = true;              // Afficher Liquidity Sweeps
-input int         SwLen    = 5;                 // Swings
-input ENUM_SWOPT  SwOpt    = OnlyWicks;         // options
-input color       SwColBl  = C'8,153,129';      // Bull
-input color       SwColBr  = C'242,54,69';      // Bear
-input int         SwT2     = 50;                // Transparence des lignes de niveau (#08998180)
-input group "Sweep Area"
-input bool        SwExtend = true;              // Extend
-input int         SwMaxB   = 300;               // Max bars
-input int         SwT3     = 75;                // Transparence des zones (#08998141)
+//--- 1. Liquidity Swings & Sweeps
+input group "Liquidity Swings & Sweeps · Settings"
+input bool        LsOn     = true;              // Afficher Liquidity Swings & Sweeps
+input int         LsLeft   = 5;                 // Swing Sensitivity (Left)
+input int         LsRight  = 2;                 // Swing Sensitivity (Right)
+input bool        LsMax    = true;              // Find Maximum Liquidity
+input group "Liquidity Swings & Sweeps · Appearance"
+input color       LsUpCol  = C'242,54,69';      // High Liquidity Line Color
+input int         LsUpT    = 35;                // High · transparence
+input color       LsDnCol  = C'8,153,129';      // Low Liquidity Line Color
+input int         LsDnT    = 35;                // Low · transparence
+input int         LsWidth  = 1;                 // Line Width
+input bool        LsLabel  = true;              // Show Liquidity Sweep Label/Rating
+input group "Liquidity Swings & Sweeps · Alert on Liquidity Sweep (à la clôture)"
+input bool        LsAlA    = false;             // ❄️ Weak
+input bool        LsAlB    = false;             // ✅ Ok
+input bool        LsAlC    = true;              // 🔥 Strong
+input bool        LsAlD    = true;              // 💥 Very Strong
+input string      LsAlMsg  = "Liquidity Sweep: "; // Alert Message Prefix
+input bool        AlPopup  = true;              // Fenêtre et son MT5
+input bool        AlPush   = true;              // Notification mobile (MetaQuotes ID)
 
 //--- 2. FluidTrades - SMC Lite
 input group "FluidTrades - SMC Lite · Settings"
@@ -67,6 +83,7 @@ input color       FtBosLabel  = clrWhite;       // BOS Label
 input color       FtPoiLabel  = clrWhite;       // POI Label
 input color       FtSwingType = C'54,58,69';    // Price Action Label
 input color       FtZzColor   = C'0,0,0';       // Zig Zag
+input bool        FtTexts     = false;          // Textes SUPPLY, DEMAND, POI et BOS
 
 //--- 3. TJR Swing High/Low + BOS
 input group "TJR · Most Recent Swing High & Low"
@@ -104,6 +121,32 @@ input int         TjPbOp     = 100;             // Potential BOS · Opacity
 input ENUM_LSTYLE TjPbStyle  = sol;             // Potential BOS · Line style
 input int         TjPbWidth  = 2;               // Potential BOS · Thickness
 
+//--- 4. FVG Instantaneous Mitigation Signals [LuxAlgo]
+input group "FVG Instantaneous Mitigation Signals"
+input bool         ImOn       = true;           // Afficher FVG Instantaneous Mitigation Signals
+input double       ImFilter   = 0.0;            // FVG Width Filter
+input group "IMFVG · TP/SL"
+input bool         ImShowTp   = false;          // TP Area
+input double       ImTpMult   = 4.0;            // TP · Multiplier
+input color        ImTpCss    = C'91,156,246';  // TP · couleur
+input int          ImTpT      = 80;             // TP · transparence
+input bool         ImShowSl   = false;          // SL Area
+input double       ImSlMult   = 2.0;            // SL · Multiplier
+input color        ImSlCss    = C'120,123,134'; // SL · couleur
+input int          ImSlT      = 80;             // SL · transparence
+input group "IMFVG · Trailing Stop"
+input ENUM_TSRESET ImTsReset  = EverySignals;   // Reset Trailing Stop
+input double       ImTsMult   = 3.0;            // Multiplier
+input bool         ImPlotTs   = true;           // Tracer le Trailing Stop
+input group "IMFVG · Style"
+input bool         ImShowBull = true;           // Bullish IMFVG
+input color        ImBullCss  = C'8,153,129';   // Bullish · couleur
+input bool         ImBullAvg  = true;           // Bullish · Average
+input bool         ImShowBear = true;           // Bearish IMFVG
+input color        ImBearCss  = C'242,54,69';   // Bearish · couleur
+input bool         ImBearAvg  = true;           // Bearish · Average
+input bool         ImBarColor = true;           // Couleur des bougies (barcolor)
+
 input group "MT5"
 input int    InpMaxBars = 5000;                 // Bougies calculées (TradingView : 5 000)
 input string InpFont    = "Trebuchet MS";       // Police (celle de TradingView)
@@ -113,8 +156,18 @@ input string InpFont    = "Trebuchet MS";       // Police (celle de TradingView)
 #define MAX_OBJ   500
 #define CD_MARK   "\x01CD"                      // texte remplacé par le compte à rebours au dessin
 
-enum ENUM_LBLSTYLE { LS_DOWN = 0, LS_UP = 1, LS_LEFT = 2 };
-enum ENUM_PART     { P_SW = 0, P_FT = 1, P_TJ = 2 };
+enum ENUM_LBLSTYLE { LS_DOWN = 0, LS_UP = 1, LS_LEFT = 2, LS_CENTER = 3 };
+enum ENUM_PART     { P_LS = 0, P_FT = 1, P_TJ = 2, P_IM = 3 };
+
+//--- Alertes : collectées pendant le calcul d'une bougie clôturée en direct, envoyées ensemble
+bool   gAlertLive = false;
+string gAlertBuf  = "";
+void   Ev(bool on, string msg)
+  {
+   if(!on || !gAlertLive) return;
+   if(StringFind(gAlertBuf, msg) >= 0) return;
+   gAlertBuf += (gAlertBuf == "" ? "" : " · ") + msg;
+  }
 
 uint A(const color c, const int transp)
   {
@@ -127,9 +180,9 @@ struct DBox   { double x1; double top; double x2; double bot; uint bg; uint bd; 
                 int tsize; bool tleft; int part; bool alive; };
 struct DLabel { double x; double y; string text; uint tc; int style; int size; int part; bool alive; };
 
-//--- Liquidity Sweeps : pivot (piv) et zone de sweep (boxBr)
-struct SPiv  { double prc; int bix; bool brk; bool mit; bool tak; bool wic; };
-struct SBoxBr { int bx; int ln; bool br; int dr; };
+//--- Liquidity Swings & Sweeps : liquidity (time = indice de bougie, -1 = non défini) et HL
+struct SLiq { double price; int time; bool broken; int drawLine; int breakLine; int breakLabel; int brokenTime; bool current; };
+struct SHiLo  { double price; int time; };
 
 template<typename T> void Push(T &a[], const T &v) { int n = ArraySize(a); ArrayResize(a, n + 1, 64); a[n] = v; }
 template<typename T> void CopyArr(T &d[], const T &s[])
@@ -163,15 +216,25 @@ class CState
   {
 public:
    DLine  lines[];  DBox boxes[];  DLabel labels[];
-   int    liveL[3];
-   int    oldL[3];
-   int    liveB[3];
-   int    oldB[3];
-   int    liveT[3];
-   int    oldT[3];
-   //--- Liquidity Sweeps
-   SPiv   pivH[], pivL[];
-   SBoxBr boxBr[];
+   int    liveL[4];
+   int    oldL[4];
+   int    liveB[4];
+   int    oldB[4];
+   int    liveT[4];
+   int    oldT[4];
+   //--- Liquidity Swings & Sweeps : réservoir d'objets liquidity, tableaux d'indices, HL mineurs
+   SLiq   lsPool[];
+   int    lsBear[];
+   int    lsBull[];
+   SHiLo    lsHLA[];
+   SHiLo    lsLLA[];
+   //--- IMFVG
+   int    imBullLine, imBearLine, imOs, imOsPrev;
+   bool   imBullLvl, imBearLvl, imTsReached;
+   double imTs;
+   int    imTp[];
+   int    imSl[];
+   bool   imReached[];
    //--- FluidTrades
    double ftShV[];
    double ftSlV[];
@@ -198,8 +261,11 @@ public:
    void Reset()
      {
       ArrayFree(lines); ArrayFree(boxes); ArrayFree(labels);
-      for(int p = 0; p < 3; p++) { liveL[p] = oldL[p] = liveB[p] = oldB[p] = liveT[p] = oldT[p] = 0; }
-      ArrayFree(pivH); ArrayFree(pivL); ArrayFree(boxBr);
+      for(int p = 0; p < 4; p++) { liveL[p] = oldL[p] = liveB[p] = oldB[p] = liveT[p] = oldT[p] = 0; }
+      ArrayFree(lsPool); ArrayFree(lsBear); ArrayFree(lsBull); ArrayFree(lsHLA); ArrayFree(lsLLA);
+      imBullLine = imBearLine = NAI; imOs = 0; imOsPrev = 0; imBullLvl = imBearLvl = false; imTsReached = false; imTs = NA;
+      ArrayResize(imTp, 2); ArrayResize(imSl, 2); ArrayResize(imReached, 2);
+      ArrayInitialize(imTp, NAI); ArrayInitialize(imSl, NAI); ArrayInitialize(imReached, false);
       ArrayResize(ftShV, 5); ArrayResize(ftSlV, 5); ArrayResize(ftShB, 5); ArrayResize(ftSlB, 5);
       ArrayResize(ftSupBos, 5); ArrayResize(ftDemBos, 5);
       ArrayInitialize(ftShV, 0.0); ArrayInitialize(ftSlV, 0.0); ArrayInitialize(ftShB, 0); ArrayInitialize(ftSlB, 0);
@@ -217,9 +283,12 @@ public:
    void CopyFrom(const CState &o)
      {
       CopyArr(lines, o.lines); CopyArr(boxes, o.boxes); CopyArr(labels, o.labels);
-      for(int p = 0; p < 3; p++)
+      for(int p = 0; p < 4; p++)
         { liveL[p] = o.liveL[p]; oldL[p] = o.oldL[p]; liveB[p] = o.liveB[p]; oldB[p] = o.oldB[p]; liveT[p] = o.liveT[p]; oldT[p] = o.oldT[p]; }
-      CopyArr(pivH, o.pivH); CopyArr(pivL, o.pivL); CopyArr(boxBr, o.boxBr);
+      CopyArr(lsPool, o.lsPool); CopyArr(lsBear, o.lsBear); CopyArr(lsBull, o.lsBull); CopyArr(lsHLA, o.lsHLA); CopyArr(lsLLA, o.lsLLA);
+      imBullLine = o.imBullLine; imBearLine = o.imBearLine; imOs = o.imOs; imOsPrev = o.imOsPrev;
+      imBullLvl = o.imBullLvl; imBearLvl = o.imBearLvl; imTsReached = o.imTsReached; imTs = o.imTs;
+      CopyArr(imTp, o.imTp); CopyArr(imSl, o.imSl); CopyArr(imReached, o.imReached);
       CopyArr(ftShV, o.ftShV); CopyArr(ftSlV, o.ftSlV); CopyArr(ftShB, o.ftShB); CopyArr(ftSlB, o.ftSlB);
       CopyArr(ftSupBos, o.ftSupBos); CopyArr(ftDemBos, o.ftDemBos);
       CopyArr(ftSupBox, o.ftSupBox); CopyArr(ftDemBox, o.ftDemBox); CopyArr(ftSupPoi, o.ftSupPoi); CopyArr(ftDemPoi, o.ftDemPoi);
@@ -276,7 +345,11 @@ public:
   };
 
 //--- Données du graphique (fenêtre de InpMaxBars bougies, indice 0 = la plus ancienne)
-double   gO[], gH[], gL[], gC[], gAtr[];
+double   gO[], gH[], gL[], gC[], gAtr[], gAtr200[];
+double   gImTs[];
+int      gImBar[], gImTsClr[];
+//--- tampons MT5 : bougies recolorées (barcolor) et trailing stop (plot) de l'IMFVG
+double   bO[], bH[], bL[], bC[], bClr[], bTs[], bTsClr[];
 datetime gT[];
 int      gN = 0, gBase = 0, gTotal = 0, gProcessed = -1, gPer = 60;
 CState   gCommit, gWork;
@@ -292,11 +365,20 @@ bool     gDirty = false;
 
 int OnInit()
   {
-   if(SwLen < 1 || FtSwing < 1 || FtHistory < 1 || FtBoxWidth <= 0 || InpMaxBars < 300)
+   if(LsLeft < 1 || LsRight < 1 || FtSwing < 1 || FtHistory < 1 || FtBoxWidth <= 0 || InpMaxBars < 300)
       return INIT_PARAMETERS_INCORRECT;
    gDpi = MathMax(1.0, TerminalInfoInteger(TERMINAL_SCREEN_DPI) / 96.0);
    gName = "CXST_" + IntegerToString(ChartID()) + "_" + IntegerToString(GetTickCount());
-   IndicatorSetString(INDICATOR_SHORTNAME, "CX Sweeps · SMC Lite · TJR");
+   IndicatorSetString(INDICATOR_SHORTNAME, "CX Liquidity · SMC Lite · TJR · IMFVG");
+   SetIndexBuffer(0, bO, INDICATOR_DATA); SetIndexBuffer(1, bH, INDICATOR_DATA);
+   SetIndexBuffer(2, bL, INDICATOR_DATA); SetIndexBuffer(3, bC, INDICATOR_DATA);
+   SetIndexBuffer(4, bClr, INDICATOR_COLOR_INDEX);
+   SetIndexBuffer(5, bTs, INDICATOR_DATA); SetIndexBuffer(6, bTsClr, INDICATOR_COLOR_INDEX);
+   PlotIndexSetDouble(0, PLOT_EMPTY_VALUE, EMPTY_VALUE);
+   PlotIndexSetDouble(1, PLOT_EMPTY_VALUE, EMPTY_VALUE);
+   PlotIndexSetInteger(0, PLOT_LINE_COLOR, 0, ImBullCss); PlotIndexSetInteger(0, PLOT_LINE_COLOR, 1, ImBearCss);
+   PlotIndexSetInteger(1, PLOT_LINE_COLOR, 0, ImBullCss); PlotIndexSetInteger(1, PLOT_LINE_COLOR, 1, ImBearCss);
+   PlotIndexSetInteger(0, PLOT_SHOW_DATA, false);
    gProcessed = -1;
    EventSetMillisecondTimer(100);
    return INIT_SUCCEEDED;
@@ -352,121 +434,276 @@ void Atr(double &out[], int len, int from)
   }
 
 //+------------------------------------------------------------------+
-//| 1. Liquidity Sweeps [LuxAlgo]                                    |
+//| 1. Liquidity Swings & Sweeps (© OutofOptions, MPL 2.0)           |
 //+------------------------------------------------------------------+
-//--- method l : ligne du niveau du pivot jusqu'à la bougie du sweep
-void SwLineL(CState &S, const SPiv &p, int t, uint c, int style)
+//--- heure de New York (changement d'heure compris) d'une heure du serveur, pour TF() de Pine
+datetime NthSunday(int year, int mon, int nth)      // nth = 0 : dernier dimanche du mois
   {
-   S.LineNew(P_SW, p.bix, p.prc, t, p.prc, c, style, 1);
+   MqlDateTime d; d.year = year; d.mon = mon; d.day = 1; d.hour = 0; d.min = 0; d.sec = 0;
+   datetime first = StructToTime(d);
+   MqlDateTime f; TimeToStruct(first, f);
+   int sun = (7 - f.day_of_week) % 7;
+   if(nth > 0) return first + (sun + 7 * (nth - 1)) * 86400;
+   datetime t = first + sun * 86400;
+   MqlDateTime n;
+   while(true) { TimeToStruct(t + 7 * 86400, n); if(n.mon != mon) break; t += 7 * 86400; }
+   return t;
   }
-//--- lnDot : petit trait pointillé de 3 bougies
-void SwLnDot(CState &S, int t, double y, uint c)
+string LsTF(int idx)
   {
-   S.LineNew(P_SW, t, y, t + 3, y, c, dot, 1);
-  }
-//--- method br : zone du sweep (boîte de n-1 à n+1) et trait épais vertical
-void SwBr(CState &S, const SPiv &p, int t, uint c3, uint c, int d)
-  {
-   double y1 = d == 1 ? gH[t] : p.prc;
-   double y2 = d == 1 ? p.prc : gL[t];
-   SBoxBr b;
-   b.bx = S.BoxNew(P_SW, t - 1, y1, t + 1, y2, c3, 0, false, "", 0, small, false);
-   b.ln = S.LineNew(P_SW, t, y1, t, y2, c, sol, 3);
-   b.br = false;
-   b.dr = d;
-   Unshift(S.boxBr, b);
+   if(idx < 0 || idx >= gN) return "";
+   int offset = (int)MathRound((double)(TimeTradeServer() - TimeGMT()) / 1800.0) * 1800;
+   datetime utc = gT[idx] - offset;
+   MqlDateTime u; TimeToStruct(utc, u);
+   bool dst = utc >= NthSunday(u.year, 3, 2) + 7 * 3600 && utc < NthSunday(u.year, 11, 1) + 6 * 3600;
+   return TimeToString(utc + (dst ? -4 : -5) * 3600, TIME_SECONDS);
   }
 
-void SweepsBar(CState &S, int t)
+//--- ta.pivothigh(high, gauche, droite) : à égalité, c'est la plus à gauche
+bool PivotHighLR(int t, int left, int right)
   {
-   bool oW = SwOpt == OnlyWicks, oO = SwOpt == OnlyOutbreaks;
-   uint cBl = A(SwColBl, 0), cBr = A(SwColBr, 0), cBl2 = A(SwColBl, SwT2), cBr2 = A(SwColBr, SwT2);
-   uint cBl3 = A(SwColBl, SwT3), cBr3 = A(SwColBr, SwT3);
+   int c = t - right;
+   if(c - left < 0) return false;
+   for(int i = 1; i <= left; i++)  if(gH[c - i] >= gH[c]) return false;
+   for(int i = 1; i <= right; i++) if(gH[c + i] > gH[c]) return false;
+   return true;
+  }
+bool PivotLowLR(int t, int left, int right)
+  {
+   int c = t - right;
+   if(c - left < 0) return false;
+   for(int i = 1; i <= left; i++)  if(gL[c - i] <= gL[c]) return false;
+   for(int i = 1; i <= right; i++) if(gL[c + i] < gL[c]) return false;
+   return true;
+  }
 
-   if(PivotHigh(t, SwLen)) { SPiv p; p.prc = gH[t - SwLen]; p.bix = t - SwLen; p.brk = p.mit = p.tak = p.wic = false; Unshift(S.pivH, p); }
-   if(PivotLow(t, SwLen))  { SPiv p; p.prc = gL[t - SwLen]; p.bix = t - SwLen; p.brk = p.mit = p.tak = p.wic = false; Unshift(S.pivL, p); }
+//--- liquidity.new : objet du réservoir (les objets Pine sont des références)
+int LsNew(CState &S, double price, int time)
+  {
+   SLiq q; q.price = price; q.time = time; q.broken = false; q.drawLine = NAI; q.breakLine = NAI; q.breakLabel = NAI;
+   q.brokenTime = NAI; q.current = false;
+   Push(S.lsPool, q);
+   return ArraySize(S.lsPool) - 1;
+  }
 
-   for(int i = ArraySize(S.pivH) - 1; i >= 0; i--)
+//--- CD : efface les dessins d'un swing
+void LsCD(CState &S, int q)
+  {
+   S.LineDel(S.lsPool[q].drawLine);
+   S.LineDel(S.lsPool[q].breakLine);
+   S.LabelDel(S.lsPool[q].breakLabel);
+  }
+
+//--- findSubSwing : plus haut / plus bas mineur (pivots 1/1) balayé avant le swing
+void LsFindSubSwing(CState &S, SHiLo &list[], bool bullish, int swing, int lb, int maxTime)
+  {
+   int b = ArraySize(list) - 1;
+   while(b > 0)
      {
-      if(!S.pivH[i].mit)
+      SHiLo c = list[b];
+      b -= 1;
+      if(S.lsPool[lb].time >= 0 && c.time > S.lsPool[lb].time)
+        { RemoveAt(list, b + 1); continue; }
+      if(c.time >= S.lsPool[swing].time)
+         continue;
+      if(maxTime > c.time || (bullish ? c.price >= S.lsPool[swing].price : c.price <= S.lsPool[swing].price))
+         break;
+      if(S.lsPool[lb].price == NA || (bullish ? c.price >= S.lsPool[lb].price : c.price <= S.lsPool[lb].price))
         {
-         if(!S.pivH[i].brk)
-           {
-            if(gC[t] > S.pivH[i].prc)
-              {
-               if(!oW) S.pivH[i].brk = true;
-               else    S.pivH[i].mit = true;
-              }
-            if(!oO && !S.pivH[i].wic)
-               if(gH[t] > S.pivH[i].prc && gC[t] < S.pivH[i].prc)
-                 {
-                  SwBr(S, S.pivH[i], t, cBr3, cBr, 1);
-                  SwLineL(S, S.pivH[i], t, cBr2, dot); SwLnDot(S, t, gL[t], cBr);
-                  S.pivH[i].wic = true;
-                 }
-           }
-         else
-           {
-            if(gC[t] < S.pivH[i].prc)
-               S.pivH[i].mit = true;
-            if(!oW && gL[t] < S.pivH[i].prc && gC[t] > S.pivH[i].prc)
-              {
-               SwBr(S, S.pivH[i], t, cBl3, cBl, -1);
-               SwLineL(S, S.pivH[i], t, cBl2, dsh); SwLnDot(S, t, gH[t], cBl);
-               S.pivH[i].tak = true;
-              }
-           }
+         RemoveAt(list, b + 1);
+         S.lsPool[lb].time = c.time;
+         S.lsPool[lb].price = c.price;
+         S.lsPool[lb].brokenTime = S.lsPool[swing].time;
         }
-      if(t - S.pivH[i].bix > 2000 || S.pivH[i].mit || S.pivH[i].tak)
-         RemoveAt(S.pivH, i);
      }
+  }
 
-   for(int i = ArraySize(S.pivL) - 1; i >= 0; i--)
+//--- render : ligne de liquidité en cours, balayage pointillé et note du sweep
+void LsRender(CState &S, int &arr[], bool bullish, int t)
+  {
+   int  n = ArraySize(arr) - 1;
+   uint clr = bullish ? A(LsUpCol, LsUpT) : A(LsDnCol, LsDnT);
+   while(n > 0)
      {
-      if(!S.pivL[i].mit)
+      int  swing = arr[n];
+      bool validSwing = bullish ? (S.lsPool[swing].price >= gH[t]) : (S.lsPool[swing].price <= gL[t]);
+      if(!validSwing)
         {
-         if(!S.pivL[i].brk)
+         if(!S.lsPool[swing].broken)
            {
-            if(gC[t] < S.pivL[i].prc)
-              {
-               if(!oW) S.pivL[i].brk = true;
-               else    S.pivL[i].mit = true;
-              }
-            if(!oO && !S.pivL[i].wic)
-               if(gL[t] < S.pivL[i].prc && gC[t] > S.pivL[i].prc)
-                 {
-                  SwBr(S, S.pivL[i], t, cBl3, cBl, -1);
-                  SwLineL(S, S.pivL[i], t, cBl2, dot); SwLnDot(S, t, gH[t], cBl);
-                  S.pivL[i].wic = true;
-                 }
+            S.lsPool[swing].broken = true;
+            S.lsPool[swing].brokenTime = t;
+            if(S.lsPool[swing].current) LsCD(S, swing);
            }
-         else
+         n -= 1;
+         continue;
+        }
+      if(!S.lsPool[swing].current)
+        {
+         S.lsPool[swing].current = true;
+         S.lsPool[swing].drawLine = S.LineNew(P_LS, S.lsPool[swing].time, S.lsPool[swing].price, t, S.lsPool[swing].price, clr, sol, LsWidth);
+         int prev = NAI, lb = NAI;
+         while(n > 0)
            {
-            if(gC[t] > S.pivL[i].prc)
-               S.pivL[i].mit = true;
-            if(!oW && gH[t] > S.pivL[i].prc && gC[t] < S.pivL[i].prc)
+            n -= 1;
+            prev = arr[n];
+            if(bullish ? (S.lsPool[prev].price > S.lsPool[swing].price) : (S.lsPool[swing].price > S.lsPool[prev].price))
+               break;
+            if(lb == NAI) lb = prev;
+            else if(bullish ? (S.lsPool[prev].price >= S.lsPool[lb].price) : (S.lsPool[prev].price <= S.lsPool[lb].price))
+               lb = prev;
+            if(S.lsPool[lb].current)
               {
-               SwBr(S, S.pivL[i], t, cBr3, cBr, 1);
-               SwLineL(S, S.pivL[i], t, cBr2, dsh); SwLnDot(S, t, gL[t], cBr);
-               S.pivL[i].tak = true;
+               LsCD(S, lb);
+               if(S.lsPool[swing].time >= S.lsPool[lb].time) RemoveAt(arr, n);
+              }
+           }
+         if(LsMax)
+           {
+            if(lb == NAI) lb = LsNew(S, NA, NAI);
+            int maxTime = prev == NAI ? NAI : S.lsPool[prev].time;
+            if(bullish) LsFindSubSwing(S, S.lsHLA, bullish, swing, lb, maxTime);
+            else        LsFindSubSwing(S, S.lsLLA, bullish, swing, lb, maxTime);
+           }
+         if(lb != NAI && S.lsPool[lb].price != NA && S.lsPool[lb].price != S.lsPool[swing].price)
+           {
+            int bt = S.lsPool[lb].brokenTime >= 0 ? S.lsPool[lb].brokenTime : S.lsPool[swing].time;
+            S.lsPool[swing].breakLine = S.LineNew(P_LS, S.lsPool[lb].time, S.lsPool[lb].price, bt, S.lsPool[lb].price, clr, dsh, LsWidth);
+            if(LsLabel && S.lsPool[lb].time >= 0)
+              {
+               bool   doAlert = false;
+               double timeD = MathRound((double)(gT[bt] - gT[S.lsPool[lb].time]) / 60.0 * 100.0) / 100.0;   // minutes
+               int    hours = 0;
+               double pd = bullish ? S.lsPool[swing].price - S.lsPool[lb].price : S.lsPool[lb].price - S.lsPool[swing].price;
+               string rating = "❄️";
+               if(timeD >= 60)      { hours = (int)MathFloor(timeD / 60); timeD -= hours * 60; rating = "💥"; doAlert = LsAlD; }
+               else if(timeD >= 15) { rating = "🔥"; doAlert = LsAlC; }
+               else if(timeD >= 5)  { rating = pd >= 10 ? "🔥" : "✅"; doAlert = LsAlB; }
+               else if(pd >= 10)    { rating = "✅"; doAlert = LsAlB; }
+               else                 doAlert = LsAlA;
+               string tip = DoubleToString(S.lsPool[lb].price, _Digits) + " @ " + LsTF(S.lsPool[lb].time) + " swept @ " + LsTF(bt)
+                            + " in " + (hours > 0 ? IntegerToString(hours) + "h" : "") + DoubleToString(timeD, timeD == MathRound(timeD) ? 0 : 2) + "m";
+               if(doAlert && t - bt < 5)
+                  Ev(true, LsAlMsg + rating + " " + tip);
+               double dbars = (double)(gT[bt] - gT[S.lsPool[lb].time]) / gPer;
+               int xpos = dbars > 30 ? bt - 10 : (int)MathRound((S.lsPool[lb].time + bt) / 2.0);
+               S.lsPool[swing].breakLabel = S.LabelNew(P_LS, xpos, S.lsPool[lb].price, rating, clr, LS_CENTER, small);
               }
            }
         }
-      if(t - S.pivL[i].bix > 2000 || S.pivL[i].mit || S.pivL[i].tak)
-         RemoveAt(S.pivL, i);
+      else if(S.LOk(S.lsPool[swing].drawLine))
+         S.lines[S.lsPool[swing].drawLine].x2 = t;
+      break;
      }
+  }
 
-   if(SwExtend)
-      for(int k = 0; k < ArraySize(S.boxBr); k++)
+void LssBar(CState &S, int t, bool doRender)
+  {
+   if(LsMax)
+     {
+      if(PivotHighLR(t, 1, 1)) { SHiLo h; h.price = gH[t - 1]; h.time = t - 1; Push(S.lsHLA, h); }
+      if(PivotLowLR(t, 1, 1))  { SHiLo l; l.price = gL[t - 1]; l.time = t - 1; Push(S.lsLLA, l); }
+     }
+   if(PivotHighLR(t, LsLeft, LsRight)) Push(S.lsBear, LsNew(S, gH[t - LsRight], t - LsRight));
+   if(PivotLowLR(t, LsLeft, LsRight))  Push(S.lsBull, LsNew(S, gL[t - LsRight], t - LsRight));
+   if(doRender)                                  // barstate.islast
+     {
+      LsRender(S, S.lsBear, true, t);
+      LsRender(S, S.lsBull, false, t);
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| 4. FVG Instantaneous Mitigation Signals [LuxAlgo]                |
+//+------------------------------------------------------------------+
+//--- tpsl : zones TP / SL (désactivées par défaut) et état « atteint »
+bool ImTpsl(CState &S, int k, bool cond, bool opp, double level, bool isLong, double atr, int t)
+  {
+   if(cond)
+     {
+      if(isLong)
         {
-         if(S.boxBr[k].br) continue;
-         int id = S.boxBr[k].bx;
-         double left = S.BLeft(id);
-         if(left == NA || t - left - 1 > SwMaxB) continue;
-         S.boxes[id].x2 = t;
-         if(S.boxBr[k].dr == -1 && gC[t] < S.boxes[id].bot) S.boxBr[k].br = true;
-         if(S.boxBr[k].dr ==  1 && gC[t] > S.boxes[id].top) S.boxBr[k].br = true;
+         if(ImShowTp) S.imTp[k] = S.BoxNew(P_IM, t, level + atr * ImTpMult, t, level, A(ImTpCss, ImTpT), 0, false, "", 0, small, false);
+         if(ImShowSl) S.imSl[k] = S.BoxNew(P_IM, t, level, t, level - atr * ImSlMult, A(ImSlCss, ImSlT), 0, false, "", 0, small, false);
         }
+      else
+        {
+         if(ImShowTp) S.imTp[k] = S.BoxNew(P_IM, t, level, t, level - atr * ImTpMult, A(ImTpCss, ImTpT), 0, false, "", 0, small, false);
+         if(ImShowSl) S.imSl[k] = S.BoxNew(P_IM, t, level + atr * ImSlMult, t, level, A(ImSlCss, ImSlT), 0, false, "", 0, small, false);
+        }
+      S.imReached[k] = false;
+     }
+   else if(opp)
+      S.imReached[k] = true;
+   if(!S.imReached[k])
+     {
+      if(S.BOk(S.imTp[k])) S.boxes[S.imTp[k]].x2 = t;
+      if(S.BOk(S.imSl[k])) S.boxes[S.imSl[k]].x2 = t;
+      double tpT = S.BTop(S.imTp[k]), tpB = S.BBot(S.imTp[k]), slT = S.BTop(S.imSl[k]), slB = S.BBot(S.imSl[k]);
+      if(isLong)
+        { if((tpT != NA && gH[t] > tpT) || (slB != NA && gL[t] < slB)) S.imReached[k] = true; }
+      else
+        { if((tpB != NA && gL[t] < tpB) || (slT != NA && gH[t] > slT)) S.imReached[k] = true; }
+     }
+   return S.imReached[k];
+  }
+
+void ImfvgBar(CState &S, int t)
+  {
+   gImBar[t] = -1; gImTs[t] = NA; gImTsClr[t] = -1;
+   if(t < 3) return;
+   double atr = gAtr200[t] == NA ? 0.0 : gAtr200[t];        // nz(ta.atr(200))
+   uint bullC = A(ImBullCss, 0), bearC = A(ImBearCss, 0);
+   bool bull = gL[t - 3] > gH[t - 1] && gC[t - 2] < gL[t - 3] && gC[t] > gL[t - 3] && gL[t - 3] - gH[t - 1] > atr * ImFilter && ImShowBull;
+   if(bull)
+     {
+      S.BoxNew(P_IM, t - 3, gL[t - 3], t, gH[t - 1], A(ImBullCss, 50), 0, false, "", 0, small, false);
+      double avg = (gL[t - 3] + gH[t - 1]) / 2;
+      if(ImBullAvg) S.imBullLine = S.LineNew(P_IM, t, avg, t, avg, bullC, dsh, 1);
+      S.LabelNew(P_IM, t, gL[t], "▲", bullC, LS_UP, small);
+      S.imOs = 1;
+      S.imBullLvl = false;
+     }
+   bool bear = gL[t - 1] > gH[t - 3] && gC[t - 2] > gH[t - 3] && gC[t] < gH[t - 3] && gL[t - 1] - gH[t - 3] > atr * ImFilter && ImShowBear;
+   if(bear)
+     {
+      S.BoxNew(P_IM, t - 3, gL[t - 1], t, gH[t - 3], A(ImBearCss, 50), 0, false, "", 0, small, false);
+      double avg = (gL[t - 1] + gH[t - 3]) / 2;
+      if(ImBearAvg) S.imBearLine = S.LineNew(P_IM, t, avg, t, avg, bearC, dsh, 1);
+      S.LabelNew(P_IM, t, gH[t], "▼", bearC, LS_DOWN, small);
+      S.imOs = 0;
+      S.imBearLvl = false;
+     }
+   if(!S.imBullLvl && S.LOk(S.imBullLine)) S.lines[S.imBullLine].x2 = t;
+   if(!S.imBearLvl && S.LOk(S.imBearLine)) S.lines[S.imBearLine].x2 = t;
+   if(S.LOk(S.imBullLine) && gC[t] < S.lines[S.imBullLine].y2) S.imBullLvl = true;
+   if(S.LOk(S.imBearLine) && gC[t] > S.lines[S.imBearLine].y2) S.imBearLvl = true;
+
+   bool bullReached = ImTpsl(S, 0, bull, bear, (gL[t - 3] + gH[t - 1]) / 2, true, atr, t);
+   bool bearReached = ImTpsl(S, 1, bear, bull, (gL[t - 1] + gH[t - 3]) / 2, false, atr, t);
+
+   //--- trailing stop
+   bool reset = ImTsReset == EverySignals ? (bull || bear) : S.imOs != S.imOsPrev;
+   if(reset)
+     {
+      S.imTs = S.imOs == 1 ? gC[t] - atr * ImTsMult : gC[t] + atr * ImTsMult;
+      S.imTsReached = false;
+     }
+   else
+     {
+      if(S.imTs != NA)
+        {
+         if(S.imOs == 1) S.imTs = gC[t] - S.imTs > atr * ImTsMult ? gC[t] - atr * ImTsMult : S.imTs;
+         else            S.imTs = S.imTs - gC[t] > atr * ImTsMult ? gC[t] + atr * ImTsMult : S.imTs;
+         if(gC[t] < S.imTs && S.imOs == 1)      S.imTsReached = true;
+         else if(gC[t] > S.imTs && S.imOs == 0) S.imTsReached = true;
+        }
+     }
+   S.imOsPrev = S.imOs;
+   //--- barcolor et plot du trailing stop
+   gImBar[t] = S.imTsReached ? -1 : (S.imOs == 1 && !bullReached) ? 0 : (S.imOs == 0 && !bearReached) ? 1 : -1;
+   gImTs[t]    = S.imTs;
+   gImTsClr[t] = (S.imTsReached || bull || bear) ? -1 : (S.imOs == 1 ? 0 : 1);
   }
 
 //+------------------------------------------------------------------+
@@ -518,16 +755,16 @@ void FtSupplyDemand(CState &S, const double &vals[], const int &bns[], int &boxA
    if(boxType == 1)
      {
       S.BoxDel(boxArr[last]);
-      AddPopI(boxArr, S.BoxNew(P_FT, left, top, t, bot, A(FtSupply, FtSupplyT), A(FtSupplyOut, FtSupplyOutT), true, "SUPPLY", A(FtPoiLabel, 0), small, false));
+      AddPopI(boxArr, S.BoxNew(P_FT, left, top, t, bot, A(FtSupply, FtSupplyT), A(FtSupplyOut, FtSupplyOutT), true, FtTexts ? "SUPPLY" : "", A(FtPoiLabel, 0), small, false));
       S.BoxDel(poiArr[last]);
-      AddPopI(poiArr, S.BoxNew(P_FT, left, poi, t, poi, poiC, poiC, true, "POI", A(FtPoiLabel, 0), small, true));
+      AddPopI(poiArr, S.BoxNew(P_FT, left, poi, t, poi, poiC, poiC, true, FtTexts ? "POI" : "", A(FtPoiLabel, 0), small, true));
      }
    else
      {
       S.BoxDel(boxArr[last]);
-      AddPopI(boxArr, S.BoxNew(P_FT, left, top, t, bot, A(FtDemand, FtDemandT), A(FtDemandOut, FtDemandOutT), true, "DEMAND", A(FtPoiLabel, 0), small, false));
+      AddPopI(boxArr, S.BoxNew(P_FT, left, top, t, bot, A(FtDemand, FtDemandT), A(FtDemandOut, FtDemandOutT), true, FtTexts ? "DEMAND" : "", A(FtPoiLabel, 0), small, false));
       S.BoxDel(poiArr[last]);
-      AddPopI(poiArr, S.BoxNew(P_FT, left, poi, t, poi, poiC, poiC, true, "POI", A(FtPoiLabel, 0), small, true));
+      AddPopI(poiArr, S.BoxNew(P_FT, left, poi, t, poi, poiC, poiC, true, FtTexts ? "POI" : "", A(FtPoiLabel, 0), small, true));
      }
   }
 
@@ -548,7 +785,7 @@ void FtSdToBos(CState &S, int &boxArr[], int &bosArr[], int &poiArr[], int zoneT
          if(S.BOk(cp))
            {
             S.boxes[cp].top = mid; S.boxes[cp].bot = mid; S.boxes[cp].ext = false; S.boxes[cp].x2 = t;
-            S.boxes[cp].text = "BOS"; S.boxes[cp].tc = A(FtBosLabel, 0); S.boxes[cp].tsize = small; S.boxes[cp].tleft = false;
+            S.boxes[cp].text = FtTexts ? "BOS" : ""; S.boxes[cp].tc = A(FtBosLabel, 0); S.boxes[cp].tsize = small; S.boxes[cp].tleft = false;
            }
          S.BoxDel(boxArr[i]);
          S.BoxDel(poiArr[i]);
@@ -730,13 +967,37 @@ void TjrBar(CState &S, int t, bool confirmed)
   }
 
 //+------------------------------------------------------------------+
-//| Une exécution des trois scripts sur la bougie t                  |
+//| Une exécution des quatre scripts sur la bougie t                 |
 //+------------------------------------------------------------------+
-void ProcessBar(CState &S, int t, bool confirmed)
+//    isLast : barstate.islast (Liquidity Swings & Sweeps ne dessine que sur la dernière bougie)
+void ProcessBar(CState &S, int t, bool confirmed, bool isLast)
   {
-   if(SwOn) SweepsBar(S, t);
-   if(FtOn) FluidBar(S, t);
+   if(LsOn) LssBar(S, t, isLast);
    TjrBar(S, t, confirmed);
+   if(FtOn) FluidBar(S, t);
+   if(ImOn) ImfvgBar(S, t);
+   else { gImBar[t] = -1; gImTs[t] = NA; gImTsClr[t] = -1; }
+  }
+
+void SendAlert(string msg, datetime bar)
+  {
+   string tf = gPer < 3600 ? "M" + IntegerToString(gPer / 60) : gPer < 86400 ? "H" + IntegerToString(gPer / 3600)
+               : gPer == 86400 ? "D1" : gPer == 604800 ? "W1" : "MN1";
+   string txt = _Symbol + " " + tf + " " + TimeToString(bar, TIME_MINUTES) + " · " + msg;
+   if(AlPopup) Alert(txt);
+   if(AlPush)  SendNotification(StringSubstr(txt, 0, 255));
+  }
+
+//--- tampons MT5 de la bougie local i (indice graphique gBase + i)
+void FillBuffers(int i)
+  {
+   int k = gBase + i;
+   bool bc = ImOn && ImBarColor && gImBar[i] >= 0;
+   bO[k] = bc ? gO[i] : EMPTY_VALUE; bH[k] = bc ? gH[i] : EMPTY_VALUE; bL[k] = bc ? gL[i] : EMPTY_VALUE; bC[k] = bc ? gC[i] : EMPTY_VALUE;
+   bClr[k] = bc ? gImBar[i] : 0;
+   bool ts = ImOn && ImPlotTs && gImTsClr[i] >= 0 && gImTs[i] != NA;
+   bTs[k] = ts ? gImTs[i] : EMPTY_VALUE;
+   bTsClr[k] = ts ? gImTsClr[i] : 0;
   }
 
 //+------------------------------------------------------------------+
@@ -760,22 +1021,33 @@ int OnCalculate(const int rates_total, const int prev_calculated, const datetime
       gN = rates_total - gBase;
      }
    ArrayResize(gO, gN); ArrayResize(gH, gN); ArrayResize(gL, gN); ArrayResize(gC, gN); ArrayResize(gT, gN);
+   ArrayResize(gImBar, gN); ArrayResize(gImTs, gN); ArrayResize(gImTsClr, gN);
    for(int i = from; i < gN; i++)
      {
       gO[i] = open[gBase + i]; gH[i] = high[gBase + i]; gL[i] = low[gBase + i]; gC[i] = close[gBase + i];
       gT[i] = time[gBase + i];
      }
    Atr(gAtr, 50, from);
+   Atr(gAtr200, 200, from);
    gTotal = rates_total;
    if(full)
      {
       gCommit.Reset();
       gProcessed = 0;
+      for(int k = 0; k < rates_total; k++)
+        { bO[k] = bH[k] = bL[k] = bC[k] = EMPTY_VALUE; bClr[k] = 0; bTs[k] = EMPTY_VALUE; bTsClr[k] = 0; }
      }
    bool newBar = false;
+   int  fillFrom = gProcessed;
    while(gProcessed < gN - 1)
      {
-      ProcessBar(gCommit, gProcessed, true);
+      //--- bougie qui clôture en direct : elle était la dernière (barstate.islast) ; historique : non
+      gAlertLive = !full && gProcessed >= gN - 3;
+      gAlertBuf = "";
+      ProcessBar(gCommit, gProcessed, true, !full);
+      gAlertLive = false;
+      if(gAlertBuf != "")
+         SendAlert(gAlertBuf, gT[gProcessed]);
       gProcessed++;
       newBar = true;
      }
@@ -784,11 +1056,13 @@ int OnCalculate(const int rates_total, const int prev_calculated, const datetime
    if(full || newBar || now - gLastWork >= 250)
      {
       gWork.CopyFrom(gCommit);
-      ProcessBar(gWork, gN - 1, false);
+      ProcessBar(gWork, gN - 1, false, true);
       gLastWork = now;
       Render(gWork);
       gLastRender = now;
      }
+   for(int i = MathMax(0, fillFrom - 1); i < gN; i++)
+      FillBuffers(i);
    return rates_total;
   }
 
@@ -930,6 +1204,7 @@ void SetFont(int size, bool sym)
 
 //--- étiquette sans fond (comme les labels transparents des trois scripts)
 //    LS_DOWN : texte au-dessus du point · LS_UP : au-dessous · LS_LEFT : à droite du point
+//    LS_CENTER : centré sur le point (label.style_text_outline, note du sweep)
 void DrawLabel(const DLabel &lb, string text)
   {
    double ax = XofBar(lb.x);
@@ -937,11 +1212,15 @@ void DrawLabel(const DLabel &lb, string text)
    double ay = YofPrice(lb.y);
    if(ay < -100 || ay > gHh + 100) return;
    int tw = 0, th = 0;
-   SetFont(lb.size, false);
+   bool sym = text == "▲" || text == "▼";
+   SetFont(lb.size, sym);
+   if(lb.style == LS_CENTER) gCv.FontSet("Segoe UI Emoji", lb.size == tiny ? -45 : lb.size == small ? -60 : -75);
    gCv.TextSize(text, tw, th);
    int ph = Px(3);
    int ix = (int)MathRound(ax), iy = (int)MathRound(ay);
-   if(lb.style == LS_LEFT)
+   if(lb.style == LS_CENTER)
+      gCv.TextOut(ix, iy, text, lb.tc, TA_CENTER | TA_VCENTER);
+   else if(lb.style == LS_LEFT)
       gCv.TextOut(ix + ph, iy, text, lb.tc, TA_LEFT | TA_VCENTER);
    else if(lb.style == LS_UP)
       gCv.TextOut(ix, iy + ph, text, lb.tc, TA_CENTER | TA_TOP);

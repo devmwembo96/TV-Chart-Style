@@ -16,11 +16,12 @@ Indicateurs TradingView réécrits en MQL5, avec le même calcul et le même ren
 | `Indicators/CX_P2P.mq5` | Recréation (code fermé) : niveaux Asie / Londres / PDH / PDL / TDO, inversion de FVG, MSS, cibles Fibonacci |
 | `Indicators/CX_RangeBreaker.mq5` | Recréation (code fermé) : compression, cassures et retournements de mèche |
 | `Indicators/CX_BosChoch.mq5` | BOS & CHoCH (pivots, cassures à la clôture, tendance) |
-| `Indicators/CX_SmcSweepsTjr.mq5` | Liquidity Sweeps [LuxAlgo] + FluidTrades SMC Lite + TJR Swing High/Low + BOS, affichage TradingView |
+| `Indicators/CX_LiqSmcTjr.mq5` | Liquidity Swings & Sweeps + TJR Swing High/Low + BOS + FluidTrades SMC Lite + IMFVG, affichage TradingView (même calcul que `Pine/CX_LiqSmcTjr.pine`) |
 | `Pine/CX_Liquidity.pine` | TradingView (Pine v6) : séances et liquidité ISLB, sweeps, premium / discount, biais, POI |
 | `Pine/CX_Setups.pine` | TradingView (Pine v6) : FVG HTF, 4 setups avec tableaux, entrée / SL / TP |
 | `Pine/CX_SweepsSwings.pine` | TradingView (Pine v5) : Liquidity Sweeps + Liquidity Swings (LuxAlgo) + BOS & CHoCH réunis |
 | `Pine/CX_Composition.pine` | TradingView (Pine v6) : SMC (structure) + IMFVG + Reversal Trap + Liquidity Swings + H4 précédente + Liquidity Sweeps + Liquidity Pools + TJR Swing High/Low + BOS |
+| `Pine/CX_LiqSmcTjr.pine` | TradingView (Pine v6) : Liquidity Swings & Sweeps + TJR Swing High/Low + BOS + FluidTrades SMC Lite + IMFVG |
 
 ## Installation
 
