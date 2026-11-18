@@ -69,6 +69,7 @@ color      bearCol        = input.color(#FF3B69, "Bearish Trend & Risk Color", g
 
 
 string GRP_MTF  = "5. [CX] Tableau multi-unités (D1 → M5)"
+int        mtfBars        = input.int(5000, "Historique calculé par UT (bougies)", minval = 500, maxval = 20000, step = 500, group = GRP_MTF, tooltip = "Chaque UT est calculée sur ses N dernières bougies, quel que soit le graphique ouvert : le tableau donne la même chose sur M1, M5 ou H4. Mets le même nombre que les bougies chargées sur ton graphique (5000 en général) pour coller au tableau du haut.")
 bool       showMtf        = input.bool(true, "Afficher le tableau D1 → M5", group = GRP_MTF, tooltip = "Petit tableau en bas à droite : signal en cours sur D1, H4, H1, M15 et M5 (même moteur, mêmes réglages). La ligne se vide quand le SL ou le TP3 est touché et change à chaque nouveau signal.")
 DashSize   mtfSizeInput   = input.enum(DashSize.SMALL, "Taille du tableau D1 → M5", group = GRP_MTF, active = showMtf)
 string     mtfTz          = input.string("Africa/Lubumbashi", "Fuseau horaire des dates", group = GRP_MTF, active = showMtf)
@@ -254,8 +255,9 @@ f_avptMtf() =>
     // 5. DETERMINISTIC CLOSED-BAR STATE MACHINE (ALL 7 ENGINES IN PARALLEL)
     // ============================================================================
 
-    // [CX] dans request.security, barstate.isconfirmed est imprévisible : historique = bougies closes
-    bool mtfGate = not barstate.isrealtime or barstate.isconfirmed
+    // [CX] dans request.security, barstate.isconfirmed est imprévisible : le moteur tourne sur chaque bougie
+    //      et le tableau ne lit que la dernière bougie close de l'UT (décalage [1] au retour)
+    bool mtfGate = true
     if mtfGate and array.size(engines) == 7
         // ------------------------------------------------------------------------
         // STEP A: Update & Resolve Active Trade Plan in Each of the 7 Engines
@@ -790,7 +792,7 @@ f_avptMtf() =>
                     if not rT3 and (rDir == 1 ? high >= rTp3 : low <= rTp3)
                         rT3 := true
                         rSt := 1
-    [rDir, rTime, rEntry, rInitSl, rActSl, rTp1, rTp2, rTp3, rT1, rT2, rT3, rBe, rSl, rSt]
+    [rDir[1], rTime[1], rEntry[1], rInitSl[1], rActSl[1], rTp1[1], rTp2[1], rTp3[1], rT1[1], rT2[1], rT3[1], rBe[1], rSl[1], rSt[1]]
 
 float rawAtr      = ta.atr(14)
 float safeAtr     = nz(rawAtr, math.max(high - low, syminfo.mintick * 10.0))
@@ -1650,7 +1652,7 @@ array<bool>  mSl    = array.new<bool>(5, false)
 array<int>   mSt    = array.new<int>(5, 0)
 
 for i = 0 to 4
-    [qDir, qTime, qEntry, qInit, qAct, qTp1, qTp2, qTp3, qT1, qT2, qT3, qBe, qSl, qSt] = request.security(syminfo.tickerid, array.get(mtfTfs, i), f_avptMtf())
+    [qDir, qTime, qEntry, qInit, qAct, qTp1, qTp2, qTp3, qT1, qT2, qT3, qBe, qSl, qSt] = request.security(syminfo.tickerid, array.get(mtfTfs, i), f_avptMtf(), calc_bars_count = mtfBars)
     array.set(mDir,   i, nz(qDir))
     array.set(mTime,  i, nz(qTime))
     array.set(mEntry, i, qEntry)
