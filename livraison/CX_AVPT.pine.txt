@@ -254,7 +254,9 @@ f_avptMtf() =>
     // 5. DETERMINISTIC CLOSED-BAR STATE MACHINE (ALL 7 ENGINES IN PARALLEL)
     // ============================================================================
 
-    if barstate.isconfirmed and array.size(engines) == 7
+    // [CX] dans request.security, barstate.isconfirmed est imprévisible : historique = bougies closes
+    bool mtfGate = not barstate.isrealtime or barstate.isconfirmed
+    if mtfGate and array.size(engines) == 7
         // ------------------------------------------------------------------------
         // STEP A: Update & Resolve Active Trade Plan in Each of the 7 Engines
         // ------------------------------------------------------------------------
@@ -732,38 +734,62 @@ f_avptMtf() =>
                 FilterMode.VOL_CLIMAX   => 5
                 FilterMode.CUSTOM       => 6
                 => 0
-    int   rDir = 0
-    int   rTime = 0
-    float rEntry = na
-    float rInitSl = na
-    float rActSl = na
-    float rTp1 = na
-    float rTp2 = na
-    float rTp3 = na
-    bool  rT1 = false
-    bool  rT2 = false
-    bool  rT3 = false
-    bool  rBe = false
-    bool  rSl = false
-    int   rSt = 0
-    if array.size(engines) == 7
+    // [CX] Suivi du signal pour le tableau : valide jusqu'au prochain signal, SL ou TP3
+    //      (l'expiration à 60 bougies du moteur ne vide pas la ligne)
+    var int   rDir = 0
+    var int   rTime = 0
+    var float rEntry = na
+    var float rInitSl = na
+    var float rActSl = na
+    var float rTp1 = na
+    var float rTp2 = na
+    var float rTp3 = na
+    var bool  rT1 = false
+    var bool  rT2 = false
+    var bool  rT3 = false
+    var bool  rBe = false
+    var bool  rSl = false
+    var int   rSt = 0
+    if mtfGate and array.size(engines) == 7
         ProfileEngine selE = array.get(engines, selectedEngIdx)
         if selE.activePlanIdx >= 0 and selE.activePlanIdx < array.size(allPlans)
             SavedPlan rp = array.get(allPlans, selE.activePlanIdx)
-            rDir    := rp.dir
-            rTime   := rp.entryTime
-            rEntry  := rp.entry
-            rInitSl := rp.initSl
-            rActSl  := rp.activeSl
-            rTp1    := rp.tp1
-            rTp2    := rp.tp2
-            rTp3    := rp.tp3
-            rT1     := rp.tp1Hit
-            rT2     := rp.tp2Hit
-            rT3     := rp.tp3Hit
-            rBe     := rp.beHit
-            rSl     := rp.slHit
-            rSt     := rp.status
+            bool newSig  = rp.entryTime != rTime or rp.dir != rDir
+            bool expired = rp.status == 3 or (rp.status == 2 and not rp.beHit)
+            if newSig or not expired
+                rDir    := rp.dir
+                rTime   := rp.entryTime
+                rEntry  := rp.entry
+                rInitSl := rp.initSl
+                rActSl  := rp.activeSl
+                rTp1    := rp.tp1
+                rTp2    := rp.tp2
+                rTp3    := rp.tp3
+                rT1     := rp.tp1Hit
+                rT2     := rp.tp2Hit
+                rT3     := rp.tp3Hit
+                rBe     := rp.beHit
+                rSl     := rp.slHit
+                rSt     := expired ? 0 : rp.status
+            else if rSt == 0 and time > rp.endTime
+                // le moteur a clôturé par expiration : on continue à suivre SL / TP
+                bool slTouch = rDir == 1 ? low <= rActSl : high >= rActSl
+                if slTouch
+                    rSt := -1
+                    if rT1
+                        rBe := true
+                    else
+                        rSl := true
+                else
+                    if not rT1 and (rDir == 1 ? high >= rTp1 : low <= rTp1)
+                        rT1 := true
+                        if useBeRatchet
+                            rActSl := rEntry
+                    if not rT2 and (rDir == 1 ? high >= rTp2 : low <= rTp2)
+                        rT2 := true
+                    if not rT3 and (rDir == 1 ? high >= rTp3 : low <= rTp3)
+                        rT3 := true
+                        rSt := 1
     [rDir, rTime, rEntry, rInitSl, rActSl, rTp1, rTp2, rTp3, rT1, rT2, rT3, rBe, rSl, rSt]
 
 float rawAtr      = ta.atr(14)
@@ -1663,7 +1689,7 @@ if barstate.islast
             float act = array.get(mAct, i)
             // Ligne vide : aucun plan, SL touché, SL au BE touché ou TP3 atteint
             bool  empty   = d == 0 or st == -1 or st == 1 or (st == 2 and array.get(mBe, i)) or array.get(mSl, i) or array.get(mT3, i)
-            bool  expired = not empty and st != 0
+            bool  expired = false
             string sSens = "—"
             string sDate = "—"
             string sLvl  = "—"
