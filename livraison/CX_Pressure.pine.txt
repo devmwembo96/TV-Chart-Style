@@ -45,7 +45,7 @@ bool  showEst   = input.bool(true, "Established Trend", group = G_VIS)
 bool  showStrong = input.bool(true, "Strong Trend", group = G_VIS)
 bool  showGauge = input.bool(true, "Jauge de force (à droite)", group = G_VIS)
 bool  showTable = input.bool(true, "Tableau Trend / Market State", group = G_VIS)
-string tblPosIn = input.string("Top Right", "Position du tableau", options = ["Top Right", "Bottom Right", "Top Left", "Bottom Left"], group = G_VIS)
+string tblPosIn = input.string("Top Center", "Position du tableau", options = ["Top Center", "Top Right", "Bottom Right", "Top Left", "Bottom Left"], group = G_VIS)
 bool  colorBars = input.bool(false, "Colorer les bougies du graphique", group = G_VIS)
 color bullCol   = input.color(#00E676, "Haussier / Baissier", inline = "c", group = G_VIS)
 color bearCol   = input.color(#FF1744, "", inline = "c", group = G_VIS)
@@ -61,7 +61,10 @@ float buyRaw  = close - math.min(low, prevC)
 float sellRaw = math.max(high, prevC) - close
 
 float volMa   = ta.sma(volume, candleLen)
-float relVol  = useVol and nz(volume) > 0 and nz(volMa) > 0 ? math.min(volume / volMa, 5.0) : 1.0
+// bougie en cours : son volume est projeté sur la durée complète (sinon la pression s'effondre à droite)
+float barFrac = barstate.isconfirmed ? 1.0 : math.max(math.min((timenow - time) / math.max(time_close - time, 1), 1.0), 0.15)
+float volFull = nz(volume) / barFrac
+float relVol  = useVol and volFull > 0 and nz(volMa) > 0 ? math.min(volFull / volMa, 5.0) : 1.0
 
 float buyE    = ta.ema(buyRaw * relVol, candleLen)
 float sellE   = ta.ema(sellRaw * relVol, candleLen)
@@ -73,10 +76,10 @@ float buyP  = ta.ema(nz(buyBase) > 0 ? 200.0 * buyE / buyBase : 0.0, smoothLen)
 float sellP = -ta.ema(nz(sellBase) > 0 ? 200.0 * sellE / sellBase : 0.0, smoothLen)
 
 // dominance nette (acheteurs − vendeurs), rapportée à sa dispersion habituelle :
-// ±150 ≈ dominance normale, ±400 et plus = dominance exceptionnelle
+// ±300 ≈ dominance franche, ±600 et plus = dominance exceptionnelle
 float netRaw = buyP + sellP
 float netSd  = ta.stdev(netRaw, normLen)
-float netP   = nz(netSd) > 0 ? netRaw / netSd * 150.0 : 0.0
+float netP   = nz(netSd) > 0 ? netRaw / netSd * 300.0 : 0.0
 float fastT = ta.ema(netP, fastLen)
 float coreT = ta.ema(netP, coreLen)
 
@@ -183,7 +186,7 @@ if barstate.islast
         lBull := label.new(bar_index + 6, 300, str.tostring(bs, "#") + "% Bullish Strength", style = label.style_label_left, color = color.new(color.black, 100), textcolor = bullCol, size = size.small)
         lBear := label.new(bar_index + 6, -300, str.tostring(rs, "#") + "% Bearish Strength", style = label.style_label_left, color = color.new(color.black, 100), textcolor = bearCol, size = size.small)
 
-string tblPos = tblPosIn == "Bottom Right" ? position.bottom_right : tblPosIn == "Top Left" ? position.top_left : tblPosIn == "Bottom Left" ? position.bottom_left : position.top_right
+string tblPos = tblPosIn == "Top Center" ? position.top_center : tblPosIn == "Bottom Right" ? position.bottom_right : tblPosIn == "Top Left" ? position.top_left : tblPosIn == "Bottom Left" ? position.bottom_left : position.top_right
 var table tbl = table.new(tblPos, 2, 2, border_width = 0)
 
 if barstate.islast
@@ -191,7 +194,7 @@ if barstate.islast
     if showTable
         string trendTxt = coreT > 0 ? "Bullish" : coreT < 0 ? "Bearish" : "Neutral"
         color  trendBg  = coreT > 0 ? bullCol : coreT < 0 ? bearCol : color.gray
-        string stateTxt = strongUp or strongDn ? "Strong · Stretched" : estUp or estDn ? "Trending" : math.abs(coreT) < 40 ? "Ranging" : "Building"
+        string stateTxt = strongUp or strongDn ? "Strong · Stretched" : estUp or estDn ? "Trending" : math.abs(coreT) < 60 ? "Ranging" : "Building"
         color  stateBg  = strongUp or strongDn ? color.orange : estUp or estDn ? trendBg : color.gray
         table.cell(tbl, 0, 0, "Trend", text_color = color.white, bgcolor = #2962FF, text_size = size.small)
         table.cell(tbl, 1, 0, "Market State", text_color = color.white, bgcolor = #2962FF, text_size = size.small)
