@@ -1,4 +1,5 @@
 // This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// Partie 10 : « Triad Frame Basic - Session and Key Levels » © TriadSignals (MPL 2.0), code d’origine.
 // CX – Liquidity Grab (SFP) · FVG · MSS/BOS
 // Écriture originale inspirée du principe « ICT Liquidity Grab + FVG + MSS/BOS » :
 //   1. un SFP (prise de liquidité au-dessus / au-dessous d'un swing, clôture revenue dedans)
@@ -362,3 +363,357 @@ if buySig
     alert("Liquidity Grab : setup BUY (SFP + FVG + MSS) sur " + syminfo.ticker, alert.freq_once_per_bar_close)
 if sellSig
     alert("Liquidity Grab : setup SELL (SFP + FVG + MSS) sur " + syminfo.ticker, alert.freq_once_per_bar_close)
+
+// ============================================================================
+// 10. TRIAD FRAME BASIC – SESSIONS ET NIVEAUX CLÉS (© TriadSignals, MPL 2.0)
+//     Code d'origine ajouté tel quel.
+// ============================================================================
+// Free version: session highs/lows, PDH/PDL, PWH/PWL and key opens. Levels only.
+// All times are New York time (DST handled automatically).
+// Built for 24-hour markets (futures, forex, crypto).
+
+// ═══════════════════════════ Inputs ═══════════════════════════
+string G_HIST = "History"
+int daysBack = input.int(0, "Days back to show", minval = 0, maxval = 30, group = G_HIST, display = display.none,
+     tooltip = "0 = today only, 1 = today and yesterday, 2 = today and the two days before, and so on. Trading days start at 18:00 New York time. The current PDH/PDL and PWH/PWL always stay on the chart.")
+
+string G_SHOW = "Show"
+bool showAsia     = input.bool(true, "Asia session",                     group = G_SHOW, display = display.none)
+bool showLondon   = input.bool(true, "London session",                   group = G_SHOW, display = display.none)
+bool showNyAm     = input.bool(true, "NY AM session",                    group = G_SHOW, display = display.none)
+bool showLunch    = input.bool(true, "Lunch session",                    group = G_SHOW, display = display.none)
+bool showNyPm     = input.bool(true, "NY PM session",                    group = G_SHOW, display = display.none)
+bool showDaily    = input.bool(true, "Previous day high/low (PDH/PDL)",  group = G_SHOW, display = display.none)
+bool showWeekly   = input.bool(true, "Previous week high/low (PWH/PWL)", group = G_SHOW, display = display.none)
+bool showMidnight = input.bool(true, "Midnight open (00:00)",            group = G_SHOW, display = display.none)
+bool show830      = input.bool(true, "08:30 open",                       group = G_SHOW, display = display.none)
+bool show930      = input.bool(true, "09:30 open",                       group = G_SHOW, display = display.none)
+bool show1430     = input.bool(true, "14:30 open",                       group = G_SHOW, display = display.none)
+bool showWeekOpen = input.bool(true, "Week open (Sunday 18:00)",         group = G_SHOW, display = display.none)
+bool showMonthly  = input.bool(true, "Previous month high/low (PMH/PML)", group = G_SHOW, display = display.none)
+bool showYearOpen = input.bool(true, "Year open",                        group = G_SHOW, display = display.none)
+
+string G_COL = "Colors"
+color asiaColor     = input.color(color.orange, "Asia",         group = G_COL, display = display.none)
+color londonColor   = input.color(color.purple, "London",       group = G_COL, display = display.none)
+color nyAmColor     = input.color(color.blue,   "NY AM",        group = G_COL, display = display.none)
+color lunchColor    = input.color(color.red,    "Lunch",        group = G_COL, display = display.none)
+color nyPmColor     = input.color(color.teal,   "NY PM",        group = G_COL, display = display.none)
+color dailyColor    = input.color(color.green,  "PDH / PDL",    group = G_COL, display = display.none)
+color weeklyColor   = input.color(color.aqua,   "PWH / PWL",    group = G_COL, display = display.none)
+color midnightColor = input.color(#555555,      "00:00 open",   group = G_COL, display = display.none)
+color c830Color     = input.color(#555555,      "08:30 open",   group = G_COL, display = display.none)
+color c930Color     = input.color(#555555,      "09:30 open",   group = G_COL, display = display.none)
+color c1430Color    = input.color(#555555,      "14:30 open",   group = G_COL, display = display.none)
+color weekOpenColor = input.color(#555555,      "Week open",    group = G_COL, display = display.none)
+color monthlyColor  = input.color(color.fuchsia, "PMH / PML",   group = G_COL, display = display.none)
+color yearOpenColor = input.color(#555555,      "Year open",    group = G_COL, display = display.none)
+
+string G_ALERT = "Alerts (create alert → \"Any alert() function call\")"
+bool alertDaily   = input.bool(true, "Break of PDH / PDL",                 group = G_ALERT, display = display.none)
+bool alertWeekly  = input.bool(true, "Break of PWH / PWL",                 group = G_ALERT, display = display.none)
+bool alertMonthly = input.bool(true, "Break of PMH / PML",                 group = G_ALERT, display = display.none)
+
+// ═══════════════════════════ Time ═══════════════════════════
+string TZ     = "America/New_York"
+int    CUTOFF = 960   // 16:00 ET: session lines and opens stop extending here
+extBars = input.int(5, "Extend lines past the current bar (bars)", minval = 0, maxval = 50, group = G_SHOW, display = display.none,
+     tooltip = "Range and open lines run this many bars to the right of the current candle, so their labels sit past the price instead of on top of it.")
+string lblSizeIn = input.string("Small", "Label size", options = ["Tiny", "Small", "Normal", "Large"], group = G_SHOW, display = display.none)
+string LBL = lblSizeIn == "Tiny" ? size.tiny : lblSizeIn == "Normal" ? size.normal : lblSizeIn == "Large" ? size.large : size.small
+int EXT = int(timeframe.in_seconds(timeframe.period) * 1000) * extBars
+
+int   et_day  = dayofweek(time, TZ)
+int   mins    = hour(time, TZ) * 60 + minute(time, TZ)
+bool  new_day = mins < nz(mins[1], mins)
+float tf_sec  = timeframe.in_seconds(timeframe.period)
+float tf_min  = tf_sec / 60.0
+
+bool intraday   = timeframe.isintraday
+bool session_ok = intraday and tf_sec <= 3600
+
+// ═══════════════════════════ Trading-day history ═══════════════════════════
+// A trading day starts at 18:00 ET. Every drawing is tagged with the last trading day
+// it belongs to; when a new day starts, drawings older than `daysBack` days are deleted.
+int  sm       = (mins - 1080 + 1440) % 1440       // minutes since 18:00 ET
+bool new_tday = sm < nz(sm[1], sm)
+
+var int dayN = 0
+if new_tday
+    dayN += 1
+
+int  keepFrom = dayN - daysBack
+int  KEEP     = 1000000000                        // "keep for now" tag (current PWH/PWL)
+
+f_purgeLines(array<line> a, array<int> t) =>
+    if new_tday and a.size() > 0
+        for i = a.size() - 1 to 0
+            if t.get(i) < keepFrom
+                a.get(i).delete()
+                a.remove(i)
+                t.remove(i)
+
+f_purgeLabels(array<label> a, array<int> t) =>
+    if new_tday and a.size() > 0
+        for i = a.size() - 1 to 0
+            if t.get(i) < keepFrom
+                a.get(i).delete()
+                a.remove(i)
+                t.remove(i)
+
+// ═══════════════════════════ Functions ═══════════════════════════
+
+// Tracks the high/low of a window. When it ends, draws the levels and extends them
+// (until 16:00 / a new day if stopAtCutoff, otherwise until the next window ends).
+// High/low are tracked even when hidden, so alerts and state never get stuck.
+// dayAhead: 1 when the levels are used on the NEXT trading day (PDH/PDL).
+// persistent: keep the latest pair no matter how old (PWH/PWL); the previous pair
+// ages out from the day it was replaced.
+f_range(bool active, bool show, color col, string hiTxt, string loTxt, int width, bool stopAtCutoff, int dayAhead, bool persistent) =>
+    var float hi        = na
+    var float lo        = na
+    var int   t0        = na
+    var bool  was       = false
+    var line  hiLn      = na
+    var line  loLn      = na
+    var label hiLb      = na
+    var label loLb      = na
+    var bool  extending = false
+    var array<line>  lns  = array.new<line>()
+    var array<int>   lTag = array.new<int>()
+    var array<label> lbs  = array.new<label>()
+    var array<int>   bTag = array.new<int>()
+
+    f_purgeLines(lns, lTag)
+    f_purgeLabels(lbs, bTag)
+
+    bool ended = was and not active
+    if active
+        hi := was ? math.max(hi, high) : high
+        lo := was ? math.min(lo, low) : low
+        t0 := was ? t0 : time
+
+    if ended and show
+        // The pair being replaced was last shown today
+        if persistent and lTag.size() >= 2
+            lTag.set(lTag.size() - 1, dayN)
+            lTag.set(lTag.size() - 2, dayN)
+            bTag.set(bTag.size() - 1, dayN)
+            bTag.set(bTag.size() - 2, dayN)
+        int tag = persistent ? KEEP : dayN + dayAhead
+        hiLn := line.new(t0, hi, time + EXT, hi, xloc = xloc.bar_time, color = col, width = width)
+        loLn := line.new(t0, lo, time + EXT, lo, xloc = xloc.bar_time, color = col, width = width)
+        hiLb := label.new(time + EXT, hi, hiTxt, xloc = xloc.bar_time, color = color.new(color.black, 100), style = label.style_label_left, textcolor = col, size = LBL)
+        loLb := label.new(time + EXT, lo, loTxt, xloc = xloc.bar_time, color = color.new(color.black, 100), style = label.style_label_left, textcolor = col, size = LBL)
+        lns.push(hiLn)
+        lns.push(loLn)
+        lTag.push(tag)
+        lTag.push(tag)
+        lbs.push(hiLb)
+        lbs.push(loLb)
+        bTag.push(tag)
+        bTag.push(tag)
+        extending := true
+    else if extending
+        if stopAtCutoff and (mins >= CUTOFF or new_day)
+            extending := false
+        else
+            line.set_x2(hiLn, time + EXT)
+            line.set_x2(loLn, time + EXT)
+            label.set_x(hiLb, time + EXT)
+            label.set_x(loLb, time + EXT)
+
+    was := active
+    [ended, ended ? hi : na, ended ? lo : na]
+
+// Horizontal line at the open of the first bar at/after minute `t`, extended until 16:00.
+f_level(int t, bool show, color col, string txt) =>
+    var line  ln   = na
+    var label lb   = na
+    var bool  live = false
+    var array<line>  lns  = array.new<line>()
+    var array<int>   lTag = array.new<int>()
+    var array<label> lbs  = array.new<label>()
+    var array<int>   bTag = array.new<int>()
+    f_purgeLines(lns, lTag)
+    f_purgeLabels(lbs, bTag)
+    bool hit = mins >= t and mins - t < tf_min and (new_day or nz(mins[1], -1) < t)
+    if show
+        if hit
+            ln   := line.new(time, open, time + EXT, open, xloc = xloc.bar_time, color = col, style = line.style_dotted)
+            lb   := label.new(time + EXT, open, txt, xloc = xloc.bar_time, color = color.new(color.black, 100), style = label.style_label_left, textcolor = col, size = LBL)
+            lns.push(ln)
+            lTag.push(dayN)
+            lbs.push(lb)
+            bTag.push(dayN)
+            live := true
+        else if live
+            if mins >= CUTOFF or new_day
+                live := false
+            else
+                line.set_x2(ln, time + EXT)
+                label.set_x(lb, time + EXT)
+    live
+
+f_breakUp(float lvl) => not na(lvl) and lvl == lvl[1] and high > lvl and high[1] <= lvl
+f_breakDn(float lvl) => not na(lvl) and lvl == lvl[1] and low < lvl and low[1] >= lvl
+
+// ═══════════════════════════ Key opens ═══════════════════════════
+f_level(0,   showMidnight and intraday, midnightColor, "00:00")
+f_level(510, show830 and intraday,      c830Color,     "08:30")
+f_level(570, show930 and intraday,      c930Color,     "09:30")
+f_level(870, show1430 and intraday,     c1430Color,    "14:30")
+
+// ═══════════════════════════ Week open, month high/low, year open ═══════════════════════════
+// Read from the weekly, monthly and yearly candles (CME weeks open Sunday 18:00 ET).
+// The previous month's high/low use [1], so they never change during the month.
+[wkT, wkOpen]        = request.security(syminfo.tickerid, "W",   [time, open],                lookahead = barmerge.lookahead_on)
+[moT, pmHigh, pmLow] = request.security(syminfo.tickerid, "M",   [time, high[1], low[1]],     lookahead = barmerge.lookahead_on)
+[yrT, yrOpen]        = request.security(syminfo.tickerid, "12M", [time, open],                lookahead = barmerge.lookahead_on)
+
+// One line per trading day for each level, like the other Frame levels: it starts at the day's open (18:00)
+// and stops extending at 16:00. Older days are cleared by "Days back to show".
+f_hline(float price, bool show, color col, string txt, int width) =>
+    var line  ln   = na
+    var label lb   = na
+    var bool  live = false
+    var float last = na
+    var array<line>  lns  = array.new<line>()
+    var array<int>   lTag = array.new<int>()
+    var array<label> lbs  = array.new<label>()
+    var array<int>   bTag = array.new<int>()
+    f_purgeLines(lns, lTag)
+    f_purgeLabels(lbs, bTag)
+    if show and not na(price)
+        bool fresh = new_tday or na(last) or price != last
+        if fresh
+            if live                                   // the level changed during the day: close the old line here
+                line.set_x2(ln, time)
+                label.delete(lb)
+            ln   := line.new(time, price, time + EXT, price, xloc = xloc.bar_time, color = col, width = width)
+            lb   := label.new(time + EXT, price, txt, xloc = xloc.bar_time, style = label.style_label_left, color = color.new(color.white, 100), textcolor = col, size = LBL)
+            lns.push(ln)
+            lTag.push(dayN)
+            lbs.push(lb)
+            bTag.push(dayN)
+            last := price
+            live := mins < CUTOFF or mins >= 1080
+        else if live
+            if mins >= CUTOFF and mins < 1080         // 16:00: stop extending
+                live := false
+            else
+                line.set_x2(ln, time + EXT)
+                label.set_x(lb, time + EXT)
+    live
+
+// One continuous line for the whole period (week or year), from the period's open.
+// The week line stops at Friday 16:00; the year line runs until the next year opens.
+f_span(float price, int t0, bool show, color col, string txt, int width, bool endFriday) =>
+    var line  ln   = na
+    var label lb   = na
+    var float last = na
+    var bool  live = false
+    if show and not na(price) and not na(t0)
+        if na(last) or price != last                  // a new week / year: replace the old line
+            line.delete(ln)
+            label.delete(lb)
+            ln   := line.new(t0, price, time + EXT, price, xloc = xloc.bar_time, color = col, width = width)
+            lb   := label.new(time + EXT, price, txt, xloc = xloc.bar_time, style = label.style_label_left, color = color.new(color.white, 100), textcolor = col, size = LBL)
+            last := price
+            live := true
+        else if live
+            if endFriday and et_day == dayofweek.friday and mins >= CUTOFF
+                live := false                         // the week ends Friday 16:00
+            else
+                line.set_x2(ln, time + EXT)
+                label.set_x(lb, time + EXT)
+    else if not show and not na(ln)
+        line.delete(ln)
+        label.delete(lb)
+        ln   := na
+        lb   := na
+        last := na
+        live := false
+    live
+
+f_span(wkOpen, wkT, showWeekOpen and intraday, weekOpenColor, "Week Open", 1, true)
+f_span(pmHigh, moT, showMonthly and intraday, monthlyColor, "PMH", 2, false)   // one line for the whole month, from the month's open
+f_span(pmLow,  moT, showMonthly and intraday, monthlyColor, "PML", 2, false)
+f_span(yrOpen, yrT, showYearOpen and intraday, yearOpenColor, "Year Open", 2, false)
+
+
+// ═══════════════════════════ Sessions ═══════════════════════════
+bool inAsia = mins >= 1080 or mins < 150
+[asiaEnd, asiaH, asiaL] = f_range(inAsia,                     showAsia   and session_ok, asiaColor,   "Asia High",   "Asia Low",   1, true, 0, false)
+[lonEnd,  lonH,  lonL]  = f_range(mins >= 150 and mins < 420, showLondon and session_ok, londonColor, "Lon High",    "Lon Low"   , 1, true, 0, false)
+[amEnd,   amH,   amL]   = f_range(mins >= 420 and mins < 690, showNyAm   and session_ok, nyAmColor,   "NY AM High",  "NY AM Low",  1, true, 0, false)
+[lchEnd,  lchH,  lchL]  = f_range(mins >= 690 and mins < 780, showLunch  and session_ok, lunchColor,  "Lunch High",  "Lunch Low",  1, true, 0, false)
+[pmEnd,   pmH,   pmL]   = f_range(mins >= 780 and mins < 960, showNyPm   and session_ok, nyPmColor,   "NY PM High",  "NY PM Low",  1, true, 0, false)
+
+// ═══════════════════════════ Daily / Weekly ═══════════════════════════
+// Day: 18:00 → 16:00 ET. Week: Sunday 18:00 → Friday 16:00 ET.
+// PDH/PDL belong to the day they are used on (the next trading day), so "0" still shows yesterday's high/low.
+bool dailyActive  = mins >= 1080 or mins < CUTOFF
+bool weeklyActive = (et_day == dayofweek.sunday and mins >= 1080) or (et_day >= dayofweek.monday and et_day <= dayofweek.thursday) or (et_day == dayofweek.friday and mins < CUTOFF)
+
+[dEnd, dH, dL] = f_range(dailyActive,  showDaily  and intraday, dailyColor,  "PDH", "PDL", 2, false, 1, false)
+[wEnd, wH, wL] = f_range(weeklyActive, showWeekly and intraday, weeklyColor, "PWH", "PWL", 2, false, 0, true)
+
+// ═══════════════════════════ Alert levels (kept separate) ═══════════════════════════
+var float  sessHi   = na
+var float  sessLo   = na
+var string sessName = ""
+var float  pdh      = na
+var float  pdl      = na
+var float  pwh      = na
+var float  pwl      = na
+
+if asiaEnd and showAsia
+    sessHi   := asiaH
+    sessLo   := asiaL
+    sessName := "Asia"
+if lonEnd and showLondon
+    sessHi   := lonH
+    sessLo   := lonL
+    sessName := "London"
+if amEnd and showNyAm
+    sessHi   := amH
+    sessLo   := amL
+    sessName := "NY AM"
+if lchEnd and showLunch
+    sessHi   := lchH
+    sessLo   := lchL
+    sessName := "Lunch"
+if pmEnd and showNyPm
+    sessHi   := pmH
+    sessLo   := pmL
+    sessName := "NY PM"
+
+if dEnd
+    pdh := dH
+    pdl := dL
+if wEnd
+    pwh := wH
+    pwl := wL
+
+// Evaluated on every bar so the history references stay consistent
+bool pdhUp  = f_breakUp(pdh)
+bool pdlDn  = f_breakDn(pdl)
+bool pwhUp  = f_breakUp(pwh)
+bool pwlDn  = f_breakDn(pwl)
+bool pmhUp  = f_breakUp(pmHigh)
+bool pmlDn  = f_breakDn(pmLow)
+
+string px = ""                       // the phone notification already shows the symbol
+if alertDaily and pdhUp
+    alert(px + "Just took PDH " + str.tostring(pdh, format.mintick), alert.freq_once_per_bar)
+if alertDaily and pdlDn
+    alert(px + "Just took PDL " + str.tostring(pdl, format.mintick), alert.freq_once_per_bar)
+if alertWeekly and pwhUp
+    alert(px + "Just took PWH " + str.tostring(pwh, format.mintick), alert.freq_once_per_bar)
+if alertWeekly and pwlDn
+    alert(px + "Just took PWL " + str.tostring(pwl, format.mintick), alert.freq_once_per_bar)
+if alertMonthly and pmhUp
+    alert(px + "Just took PMH " + str.tostring(pmHigh, format.mintick), alert.freq_once_per_bar)
+if alertMonthly and pmlDn
+    alert(px + "Just took PML " + str.tostring(pmLow, format.mintick), alert.freq_once_per_bar)
