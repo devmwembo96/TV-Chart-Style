@@ -18,8 +18,8 @@
 //| Calcul sur bougies clôturées uniquement (pas de repeinture).     |
 //+------------------------------------------------------------------+
 #property copyright   "CX Système"
-#property version     "1.00"
-#property description "CX Système NAS100 : biais multi-UT, carte de liquidité (heure de New York), SFP → FVG → MSS avec filtre d'épuisement, gestion sur niveaux, tableau et alertes."
+#property version     "1.01"
+#property description "CX Système NAS100 : biais multi-UT, carte de liquidité (heure de New York), SFP > FVG > MSS avec filtre d'épuisement, gestion sur niveaux, tableau et alertes."
 #property indicator_chart_window
 #property indicator_buffers 0
 #property indicator_plots   0
@@ -49,8 +49,10 @@ input bool   InpShowOpen = true;              // Opens 00:00 / 08:30 / 09:30
 input bool   InpShowTaken = true;             // Garder les niveaux pris (pointillés pâles)
 input bool   InpFvgM15   = true;              // FVG M15 non comblés
 input bool   InpFvgH1    = true;              // FVG H1 non comblés
+input int    InpFvgMax   = 2;                 // FVG affichés de chaque côté du prix (les plus proches)
+input double InpFvgMaxAtr = 2.0;              // Taille max d'un FVG (× ATR H1) : ignore les gaps géants
 //--- 3. Déclencheur
-input group "3. Déclencheur (SFP → FVG → MSS)"
+input group "3. Déclencheur (SFP > FVG > MSS)"
 input int    InpMssPiv   = 3;                 // Force des pivots du MSS (graphique)
 input int    InpWindow   = 30;                // Bougies max entre le SFP et le MSS
 input bool   InpReqExh   = true;              // Exiger l'épuisement (9 / 13 ou Covered)
@@ -95,6 +97,8 @@ input string InpFont     = "Trebuchet MS";    // Police
 #define S_O830 15
 #define S_O930 16
 
+//--- symboles construits à l'exécution : le fichier peut être enregistré en ANSI par MetaEditor
+string gUp, gDn, gOk, gKo, gX, gArr;
 string gSessName[5] = {"Asia", "London", "NY AM", "Lunch", "NY PM"};
 
 uint A(const color c, const int transp)
@@ -237,6 +241,11 @@ int      gDTr[], gH4Tr[], gH1Tr[];
 double   gH1Core[];
 HZone    gHz[];
 bool     gHtfOk = false;
+double   gH1Atr = 0;
+//--- textes à droite des niveaux : regroupés pour ne pas se chevaucher
+int      gLx[], gLy[];
+string   gLt[];
+uint     gLc[];
 long     gSrvOffNow = 0;
 
 //--- canvas
@@ -429,6 +438,7 @@ void HtfFvg(const MqlRates &r[], int n, int per, int tfMin)
       if(r[k].low > r[k - 2].high && r[k - 1].close > r[k - 2].high) { dir = 1;  top = r[k].low;     bot = r[k - 2].high; }
       if(r[k].high < r[k - 2].low && r[k - 1].close < r[k - 2].low)  { dir = -1; top = r[k - 2].low; bot = r[k].high; }
       if(dir == 0) continue;
+      if(gH1Atr > 0 && top - bot > InpFvgMaxAtr * gH1Atr) continue;
       HZone z;
       z.ts = r[k - 2].time; z.tc = r[k].time + per; z.tf = 0;
       z.top = top; z.bot = bot; z.dir = dir; z.tfMin = tfMin;
@@ -458,6 +468,9 @@ bool LoadHtf()
    ArrayResize(gH1T, n); for(int i = 0; i < n; i++) gH1T[i] = r[i].time;
    HtfTrend(r, n, InpBiasPiv, gH1Tr);
    HtfCore(r, n, gH1Core);
+   double rs = 0; int rc = 0;
+   for(int i = MathMax(0, n - 100); i < n; i++) { rs += r[i].high - r[i].low; rc++; }
+   gH1Atr = rc > 0 ? rs / rc : 0;
    if(InpFvgH1) HtfFvg(r, n, 3600, 60);
    if(InpFvgM15)
      {
@@ -680,16 +693,16 @@ void ProcessBar(CState &S, int t)
      {
       S.bull.on = true; S.bull.sfpBar = t; S.bull.ext = gL[t]; S.bull.lvl = sfpName; S.bull.fvg = false;
       S.bull.htfFvg = HtfFvgAt(T, gL[t], gH[t], 1) != "";
-      AddMark(S, t, gL[t], "✕", A(ColBull, 0), 0, 1, true);
-      S.lastEvent = "SFP ▲ " + sfpName + " " + LubTime(gT[t], false);
+      AddMark(S, t, gL[t], gX, A(ColBull, 0), 0, 1, true);
+      S.lastEvent = "SFP " + gUp + " " + sfpName + " " + LubTime(gT[t], false);
       Ev(AlSfp, "SFP haussier sous " + sfpName);
      }
    if(sfpDir == -1)
      {
       S.bear.on = true; S.bear.sfpBar = t; S.bear.ext = gH[t]; S.bear.lvl = sfpName; S.bear.fvg = false;
       S.bear.htfFvg = HtfFvgAt(T, gL[t], gH[t], -1) != "";
-      AddMark(S, t, gH[t], "✕", A(ColBear, 0), 0, 0, true);
-      S.lastEvent = "SFP ▼ " + sfpName + " " + LubTime(gT[t], false);
+      AddMark(S, t, gH[t], gX, A(ColBear, 0), 0, 0, true);
+      S.lastEvent = "SFP " + gDn + " " + sfpName + " " + LubTime(gT[t], false);
       Ev(AlSfp, "SFP baissier au-dessus de " + sfpName);
      }
 
@@ -728,7 +741,7 @@ void ProcessBar(CState &S, int t)
                why = "SFP " + st.lvl + " · FVG · MSS" + (ex != "" ? " · épuis. " + ex : "") + (st.htfFvg ? " · FVG HTF" : "") + " · biais " + IntegerToString(score);
               }
             else
-               S.lastEvent = (side == 1 ? "MSS ▲" : "MSS ▼") + " refusé : " + (!biasOk ? "biais " + IntegerToString(score) : !exhOk ? "pas d'épuisement" : "pas de FVG HTF");
+               S.lastEvent = (side == 1 ? "MSS " + gUp : "MSS " + gDn) + " refusé : " + (!biasOk ? "biais " + IntegerToString(score) : !exhOk ? "pas d'épuisement" : "pas de FVG HTF");
             st.on = false;
            }
         }
@@ -812,6 +825,8 @@ int OnInit()
   {
    if(InpMaxBars < 500 || InpMssPiv < 1 || InpBiasPiv < 1 || InpWindow < 2)
       return INIT_PARAMETERS_INCORRECT;
+   gUp = ShortToString(0x25B2); gDn = ShortToString(0x25BC); gOk = ShortToString(0x2713);
+   gKo = ShortToString(0x2717); gX = ShortToString(0x2715); gArr = ShortToString(0x2192);
    gDpi = MathMax(1.0, TerminalInfoInteger(TERMINAL_SCREEN_DPI) / 96.0);
    gName = "CXSYS_" + IntegerToString(ChartID()) + "_" + IntegerToString(GetTickCount());
    IndicatorSetString(INDICATOR_SHORTNAME, "CX Système");
@@ -1038,10 +1053,7 @@ void HLevel(int x1, int x2, double y, uint c, int style, string txt, bool txtRig
    if(b < 0 || a > gW) return;
    DrawLine(a, yy, b, yy, style, Wpx(1), c);
    if(txt != "" && txtRight)
-     {
-      SetFont(tiny, false);
-      gCv.TextOut((int)b + Px(4), (int)yy, txt, c, TA_LEFT | TA_VCENTER);
-     }
+      AddRightLabel((int)b + Px(4), (int)yy, txt, c);
   }
 
 void DrawBox(int x1, int x2, double top, double bot, uint bg, uint bd)
@@ -1057,6 +1069,44 @@ void DrawBox(int x1, int x2, double top, double bot, uint bg, uint bd)
       FillRect(a, y1, b, y1, bd);
       FillRect(a, y2, b, y2, bd);
      }
+  }
+
+void AddRightLabel(int x, int y, string txt, uint c)
+  {
+   int n = ArraySize(gLt);
+   ArrayResize(gLx, n + 1); ArrayResize(gLy, n + 1); ArrayResize(gLt, n + 1); ArrayResize(gLc, n + 1);
+   gLx[n] = x; gLy[n] = y; gLt[n] = txt; gLc[n] = c;
+  }
+
+//--- tri par hauteur, puis fusion des textes trop proches (« Lunch L · NY AM L »)
+void FlushRightLabels()
+  {
+   int n = ArraySize(gLt);
+   for(int i = 0; i < n; i++)
+      for(int j = i + 1; j < n; j++)
+         if(gLy[j] < gLy[i])
+           {
+            int a = gLy[i]; gLy[i] = gLy[j]; gLy[j] = a;
+            a = gLx[i]; gLx[i] = gLx[j]; gLx[j] = a;
+            string b = gLt[i]; gLt[i] = gLt[j]; gLt[j] = b;
+            uint c = gLc[i]; gLc[i] = gLc[j]; gLc[j] = c;
+           }
+   SetFont(tiny, true);
+   int gap = Px(10);
+   int i = 0;
+   while(i < n)
+     {
+      string txt = gLt[i];
+      int x = gLx[i], ySum = gLy[i], cnt = 1, j = i + 1;
+      while(j < n && gLy[j] - gLy[j - 1] < gap)
+        {
+         if(StringFind(txt, gLt[j]) < 0) txt += " · " + gLt[j];
+         x = MathMax(x, gLx[j]); ySum += gLy[j]; cnt++; j++;
+        }
+      gCv.TextOut(x, ySum / cnt, txt, gLc[i], TA_LEFT | TA_VCENTER);
+      i = j;
+     }
+   ArrayFree(gLx); ArrayFree(gLy); ArrayFree(gLt); ArrayFree(gLc);
   }
 
 color SlotColor(int grp) { return grp == 0 ? ColDay : grp == 1 ? ColWeek : grp == 2 ? ColSess : ColOpen; }
@@ -1095,18 +1145,35 @@ void Render()
    gPMax = pMax; gY0 = ya; gKy = (double)(yb - ya) / (pMax - pMin);
    int last = gN - 1, ext = last + 6;
 
-   //--- FVG M15 / H1 encore ouverts
+   //--- FVG M15 / H1 encore ouverts : ceux qui contiennent le prix + les plus proches de chaque côté
    datetime nowT = gT[last] + gPer;
+   double px = gC[last];
+   int    cand[]; double dist[]; int side[];
    for(int i = 0; i < ArraySize(gHz); i++)
      {
       if((gHz[i].tfMin == 15 && !InpFvgM15) || (gHz[i].tfMin == 60 && !InpFvgH1)) continue;
       if(gHz[i].tf != 0 && gHz[i].tf <= nowT) continue;
-      if(gHz[i].ts < gT[0]) continue;
-      int x1 = BarAt(gHz[i].ts);
-      DrawBox(x1, ext, gHz[i].top, gHz[i].bot, A(ColFvg, gHz[i].tfMin == 60 ? 85 : 90), A(ColFvg, 70));
-      double yy = YofPrice((gHz[i].top + gHz[i].bot) / 2.0);
-      SetFont(tiny, false);
-      gCv.TextOut((int)MathRound(XofBar(ext)) - Px(4), (int)yy, gHz[i].tfMin == 60 ? "FVG H1" : "FVG M15", A(ColFvg, 30), TA_RIGHT | TA_VCENTER);
+      if(gHz[i].ts < gT[0] || gHz[i].tc > nowT) continue;
+      int sd = gHz[i].bot > px ? 1 : gHz[i].top < px ? -1 : 0;
+      int n = ArraySize(cand);
+      ArrayResize(cand, n + 1); ArrayResize(dist, n + 1); ArrayResize(side, n + 1);
+      cand[n] = i; side[n] = sd; dist[n] = sd == 1 ? gHz[i].bot - px : sd == -1 ? px - gHz[i].top : 0.0;
+     }
+   for(int sd = -1; sd <= 1; sd++)
+     {
+      int shown = 0;
+      while(true)
+        {
+         int best = -1;
+         for(int j = 0; j < ArraySize(cand); j++)
+            if(cand[j] >= 0 && side[j] == sd && (best < 0 || dist[j] < dist[best])) best = j;
+         if(best < 0 || (sd != 0 && shown >= InpFvgMax)) break;
+         int i = cand[best];
+         cand[best] = -1; shown++;
+         int x1 = BarAt(gHz[i].ts);
+         DrawBox(x1, ext, gHz[i].top, gHz[i].bot, A(ColFvg, gHz[i].tfMin == 60 ? 85 : 90), A(ColFvg, 70));
+         AddRightLabel((int)MathRound(XofBar(ext)) + Px(4), (int)MathRound(YofPrice((gHz[i].top + gHz[i].bot) / 2.0)), gHz[i].tfMin == 60 ? "FVG H1" : "FVG M15", A(ColFvg, 30));
+        }
      }
 
    //--- carte
@@ -1145,14 +1212,15 @@ void Render()
       DrawBox(tr.x0, x2, tr.entry, tr.sl0, A(ColBear, 88), 0);
       DrawBox(tr.x0, x2, tr.entry, tr.tp3, A(ColBull, 90), 0);
       bool lastOne = i == nt - 1;
-      string st = tr.status == 1 ? " ✓" : tr.status == -1 ? " ✗" : tr.status == 2 ? " BE" : "";
+      string st = tr.status == 1 ? " " + gOk : tr.status == -1 ? " " + gKo : tr.status == 2 ? " BE" : "";
       HLevel(tr.x0, x2, tr.entry, A(clrGray, 20), sol, lastOne ? "Entrée " + Px2(tr.entry) : "", lastOne);
       HLevel(tr.x0, x2, tr.sl,    A(ColBear, 10), sol, lastOne ? (tr.h1 ? "SL (entrée) " : "SL ") + Px2(tr.sl) + st : "", lastOne);
-      HLevel(tr.x0, x2, tr.tp1,   A(ColBull, 30), dot, lastOne ? "TP1 " + tr.n1 + " " + Px2(tr.tp1) + (tr.h1 ? " ✓" : "") : "", lastOne);
-      HLevel(tr.x0, x2, tr.tp2,   A(ColBull, 20), dsh, lastOne ? "TP2 " + tr.n2 + " " + Px2(tr.tp2) + (tr.h2 ? " ✓" : "") : "", lastOne);
-      HLevel(tr.x0, x2, tr.tp3,   A(ColBull, 10), sol, lastOne ? "TP3 " + tr.n3 + " " + Px2(tr.tp3) + (tr.h3 ? " ✓" : "") : "", lastOne);
+      HLevel(tr.x0, x2, tr.tp1,   A(ColBull, 30), dot, lastOne ? "TP1 " + tr.n1 + " " + Px2(tr.tp1) + (tr.h1 ? " " + gOk : "") : "", lastOne);
+      HLevel(tr.x0, x2, tr.tp2,   A(ColBull, 20), dsh, lastOne ? "TP2 " + tr.n2 + " " + Px2(tr.tp2) + (tr.h2 ? " " + gOk : "") : "", lastOne);
+      HLevel(tr.x0, x2, tr.tp3,   A(ColBull, 10), sol, lastOne ? "TP3 " + tr.n3 + " " + Px2(tr.tp3) + (tr.h3 ? " " + gOk : "") : "", lastOne);
      }
 
+   FlushRightLabels();
    DrawPanel();
    gCv.Update(true);
    gLastRender = GetTickCount();
@@ -1162,7 +1230,7 @@ void Render()
 //+------------------------------------------------------------------+
 //| Tableau                                                          |
 //+------------------------------------------------------------------+
-string Arrow(int d) { return d > 0 ? "▲" : d < 0 ? "▼" : "—"; }
+string Arrow(int d) { return d > 0 ? gUp : d < 0 ? gDn : "—"; }
 
 void DrawPanel()
   {
@@ -1183,7 +1251,7 @@ void DrawPanel()
    int bias = score >= InpBiasMin ? 1 : score <= -InpBiasMin ? -1 : 0;
    PushS(k, "BIAIS");       PushS(v, Arrow(bias) + " " + (bias > 0 ? "Haussier" : bias < 0 ? "Baissier" : "Neutre") + "  (" + IntegerToString(score) + ")"); PushU(vc, bias > 0 ? bu : bias < 0 ? be : mut);
    PushS(k, "D1 · H4 · H1"); PushS(v, Arrow(d1) + "  " + Arrow(h4) + "  " + Arrow(h1)); PushU(vc, txt);
-   PushS(k, "Pression H1"); PushS(v, core > 0 ? "▲ acheteurs" : core < 0 ? "▼ vendeurs" : "—"); PushU(vc, core > 0 ? bu : core < 0 ? be : mut);
+   PushS(k, "Pression H1"); PushS(v, core > 0 ? gUp + " acheteurs" : core < 0 ? gDn + " vendeurs" : "—"); PushU(vc, core > 0 ? bu : core < 0 ? be : mut);
 
    //--- niveaux les plus proches au-dessus / au-dessous
    double px = gC[gN - 1];
@@ -1199,16 +1267,16 @@ void DrawPanel()
    PushS(k, "Niveau au-dessous"); PushS(v, dn > -DBL_MAX ? ndn + " " + Px2(dn) : "—"); PushU(vc, txt);
    string fz = HtfFvgAt(T, gL[gN - 1], gH[gN - 1], 1);
    string fzb = HtfFvgAt(T, gL[gN - 1], gH[gN - 1], -1);
-   PushS(k, "Zone FVG HTF"); PushS(v, fz != "" ? fz + " ▲" : fzb != "" ? fzb + " ▼" : "—"); PushU(vc, fz != "" ? bu : fzb != "" ? be : mut);
+   PushS(k, "Zone FVG HTF"); PushS(v, fz != "" ? fz + " " + gUp : fzb != "" ? fzb + " " + gDn : "—"); PushU(vc, fz != "" ? bu : fzb != "" ? be : mut);
 
    //--- setup en cours
    string su = "—"; uint suc = mut;
-   if(gS.bull.on) { su = "▲ SFP " + gS.bull.lvl + (gS.bull.fvg ? " → FVG ✓ → MSS …" : " → FVG …"); suc = bu; }
-   else if(gS.bear.on) { su = "▼ SFP " + gS.bear.lvl + (gS.bear.fvg ? " → FVG ✓ → MSS …" : " → FVG …"); suc = be; }
+   if(gS.bull.on) { su = gUp + " SFP " + gS.bull.lvl + (gS.bull.fvg ? " " + gArr + " FVG " + gOk + " " + gArr + " MSS …" : " " + gArr + " FVG …"); suc = bu; }
+   else if(gS.bear.on) { su = gDn + " SFP " + gS.bear.lvl + (gS.bear.fvg ? " " + gArr + " FVG " + gOk + " " + gArr + " MSS …" : " " + gArr + " FVG …"); suc = be; }
    PushS(k, "Setup"); PushS(v, su); PushU(vc, suc);
    int lt = gN - 2, from = lt - InpExhLook;
-   string ex = "9 " + (gS.lastBull9 >= from ? "▲" : gS.lastBear9 >= from ? "▼" : "—")
-               + " · 13 " + (gS.lastBull13 >= from ? "▲" : gS.lastBear13 >= from ? "▼" : "—")
+   string ex = "9 " + (gS.lastBull9 >= from ? gUp : gS.lastBear9 >= from ? gDn : "—")
+               + " · 13 " + (gS.lastBull13 >= from ? gUp : gS.lastBear13 >= from ? gDn : "—")
                + " · Cov " + (gS.lastShortCov >= from ? "SC" : gS.lastLongCov >= from ? "LC" : "—");
    PushS(k, InpReqExh ? "Épuisement (exigé)" : "Épuisement (info)"); PushS(v, ex); PushU(vc, txt);
    PushS(k, "Dernier événement"); PushS(v, gS.lastEvent); PushU(vc, mut);
@@ -1218,8 +1286,8 @@ void DrawPanel()
    if(nt > 0)
      {
       Trade tr = gS.trades[nt - 1];
-      string ts = tr.status == 0 ? (tr.h2 ? "TP2 ✓ → TP3" : tr.h1 ? "TP1 ✓ → TP2" : "en cours")
-                  : tr.status == 1 ? "TP3 ✓ terminé" : tr.status == -1 ? "SL ✗" : tr.status == 2 ? "SL à l'entrée" : "remplacé";
+      string ts = tr.status == 0 ? (tr.h2 ? "TP2 " + gOk + " " + gArr + " TP3" : tr.h1 ? "TP1 " + gOk + " " + gArr + " TP2" : "en cours")
+                  : tr.status == 1 ? "TP3 " + gOk + " terminé" : tr.status == -1 ? "SL " + gKo : tr.status == 2 ? "SL à l'entrée" : "remplacé";
       double rNow = tr.dir * (px - tr.entry) / tr.risk;
       PushS(k, "Trade"); PushS(v, (tr.dir == 1 ? "BUY " : "SELL ") + Px2(tr.entry) + " · " + ts); PushU(vc, tr.dir == 1 ? bu : be);
       if(tr.status == 0) { PushS(k, "Progression"); PushS(v, (rNow >= 0 ? "+" : "") + DoubleToString(rNow, 1) + "R · SL " + Px2(tr.sl)); PushU(vc, rNow >= 0 ? bu : be); }
