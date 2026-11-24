@@ -1,5 +1,4 @@
 // This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
-// Partie 7b : pression achat / vente inspirée de Zeiierman (calcul propre, l'original est protégé).
 // Partie 10 : « Triad Frame Basic - Session and Key Levels » © TriadSignals (MPL 2.0), code d’origine.
 // CX – Liquidity Grab (SFP) · FVG · MSS/BOS
 // Écriture originale inspirée du principe « ICT Liquidity Grab + FVG + MSS/BOS » :
@@ -342,94 +341,13 @@ if showSet and sellSig
     label.new(bar_index, high, "SELL", style = label.style_label_down, color = bearCol, textcolor = color.white, size = size.small, yloc = yloc.abovebar)
 
 // ============================================================================
-// 7b. PRESSION ACHAT / VENTE (inspiré de « Buying/Selling Pressure & Trend
-//     Strength/Direction » de Zeiierman – code d'origine protégé, calcul propre à CX)
-//     Bougies colorées selon la pression nette, marqueurs sur le graphique.
-// ============================================================================
-string G_PR = "Pression achat / vente"
-bool  prOn      = input.bool(true, "Activer la pression achat / vente", group = G_PR)
-bool  prBars    = input.bool(true, "Colorer les bougies selon la pression", group = G_PR, tooltip = "Plus la couleur est franche, plus la pression est forte par rapport à son historique récent.")
-int   prLen     = input.int(14, "Longueur (candle length)", minval = 2, maxval = 200, group = G_PR, tooltip = "Au-dessus de 30 : pression plus lente, pour les mouvements longs.")
-int   prSmooth  = input.int(3, "Lissage", minval = 1, maxval = 50, group = G_PR)
-int   prCoreLen = input.int(50, "Longueur Core Trend", minval = 10, maxval = 400, group = G_PR)
-bool  prCover   = input.bool(true, "Long / Short Covered", group = G_PR, tooltip = "Bougie où la pression s'écarte fortement de la normale contre la tendance de fond : débouclage forcé (squeeze, capitulation).")
-float prCovZ    = input.float(2.5, "Seuil Covered (écarts-types)", minval = 1.0, maxval = 5.0, step = 0.1, group = G_PR)
-bool  prCross   = input.bool(true, "Pressure Cross", group = G_PR, tooltip = "La pression acheteuse passe au-dessus de la vendeuse (ou l'inverse).")
-bool  prPre     = input.bool(false, "Pre Signals", group = G_PR, tooltip = "Premier retournement de la pression rapide, avant le Pressure Cross. À confirmer.")
-bool  prEstab   = input.bool(true, "Established / Strong Trend", group = G_PR, tooltip = "Carré : tendance installée (rapide et fond du même côté depuis plusieurs bougies). Losange : tendance forte et étirée, risque d'essoufflement.")
-color prBullC   = input.color(#089981, "Haussier / Baissier", inline = "pc", group = G_PR)
-color prBearC   = input.color(#F23645, "", inline = "pc", group = G_PR)
-
-// pression vraie de chaque bougie (inclut l'écart avec la clôture précédente), pondérée par le volume relatif
-float prPrevC = nz(close[1], open)
-float prBuy   = close - math.min(low, prPrevC)
-float prSell  = math.max(high, prPrevC) - close
-float prVolMa = ta.sma(volume, prLen)
-float prW     = nz(volume) > 0 and nz(prVolMa) > 0 ? volume / prVolMa : 1.0
-float prBuyS  = ta.rma(prBuy * prW, prLen)
-float prSellS = ta.rma(prSell * prW, prLen)
-float prSum   = prBuyS + prSellS
-float prNetR  = prSum > 0 ? (prBuyS - prSellS) / prSum * 100.0 : 0.0
-float prNet   = ta.ema(prNetR, prSmooth)                        // pression nette lissée, -100 … +100
-float prFast  = ta.ema(prNet, 3)                                // Fast Trend
-float prSig   = ta.ema(prNet, 8)
-float prCore  = ta.ema(prNet, prCoreLen)                        // Core Trend (> 0 haussier, < 0 baissier)
-float prDev   = ta.stdev(prNet, 100)
-float prMean  = ta.sma(prNet, 100)
-
-// intensité relative à l'historique récent
-float prAbsMax = ta.highest(math.abs(prNet), 100)
-float prInt    = nz(prAbsMax) > 0 ? math.abs(prNet) / prAbsMax : 0.0
-color prCol    = prNet >= 0 ? color.new(prBullC, math.round(85 - 85 * prInt)) : color.new(prBearC, math.round(85 - 85 * prInt))
-barcolor(prOn and prBars ? prCol : na, title = "Pression achat / vente")
-
-// Strong Trend : pression étirée au-delà de 2 écarts-types
-bool prStrongUp = prNet > prMean + 2.0 * prDev and prCore > 0
-bool prStrongDn = prNet < prMean - 2.0 * prDev and prCore < 0
-// Established Trend : rapide et fond du même côté depuis 5 bougies
-int  prUpCnt = ta.barssince(not (prFast > 0 and prCore > 0))
-int  prDnCnt = ta.barssince(not (prFast < 0 and prCore < 0))
-bool prEstUp = prUpCnt >= 5
-bool prEstDn = prDnCnt >= 5
-
-// Long / Short Covered : anomalie de pression contre la tendance de fond
-float prBarNet = prSum > 0 ? (prBuy - prSell) * prW : 0.0
-float prBarMa  = ta.sma(prBarNet, 50)
-float prBarSd  = ta.stdev(prBarNet, 50)
-float prZ      = nz(prBarSd) > 0 ? (prBarNet - prBarMa) / prBarSd : 0.0
-bool  prShortCov = prZ >= prCovZ and prCore < 0                 // shorts forcés de racheter
-bool  prLongCov  = prZ <= -prCovZ and prCore > 0                // longs forcés de vendre
-
-// Pressure Cross et Pre Signals
-bool prXUp  = ta.crossover(prBuyS, prSellS)
-bool prXDn  = ta.crossunder(prBuyS, prSellS)
-bool prPreUp = ta.crossover(prFast, prSig) and prNet < 0
-bool prPreDn = ta.crossunder(prFast, prSig) and prNet > 0
-
-plotshape(prOn and prCover and prShortCov, "Short Covered", shape.diamond, location.belowbar, prBullC, size = size.tiny, text = "SC", textcolor = prBullC)
-plotshape(prOn and prCover and prLongCov,  "Long Covered",  shape.diamond, location.abovebar, prBearC, size = size.tiny, text = "LC", textcolor = prBearC)
-plotshape(prOn and prCross and prXUp, "Pressure Cross haussier", shape.triangleup,   location.belowbar, color.new(prBullC, 20), size = size.tiny)
-plotshape(prOn and prCross and prXDn, "Pressure Cross baissier", shape.triangledown, location.abovebar, color.new(prBearC, 20), size = size.tiny)
-plotshape(prOn and prPre and prPreUp, "Pre Signal haussier", shape.circle, location.belowbar, color.new(prBullC, 50), size = size.auto)
-plotshape(prOn and prPre and prPreDn, "Pre Signal baissier", shape.circle, location.abovebar, color.new(prBearC, 50), size = size.auto)
-plotshape(prOn and prEstab and prEstUp and not prEstUp[1], "Established Trend haussier", shape.square, location.belowbar, color.new(prBullC, 40), size = size.auto)
-plotshape(prOn and prEstab and prEstDn and not prEstDn[1], "Established Trend baissier", shape.square, location.abovebar, color.new(prBearC, 40), size = size.auto)
-plotshape(prOn and prEstab and prStrongUp and not prStrongUp[1], "Strong Trend haussier", shape.diamond, location.abovebar, color.new(prBullC, 0), size = size.auto)
-plotshape(prOn and prEstab and prStrongDn and not prStrongDn[1], "Strong Trend baissier", shape.diamond, location.belowbar, color.new(prBearC, 0), size = size.auto)
-
-alertcondition(prShortCov, "Short Covered", "Pression : Short Covered (débouclage des ventes) sur {{ticker}} ({{interval}})")
-alertcondition(prLongCov,  "Long Covered",  "Pression : Long Covered (débouclage des achats) sur {{ticker}} ({{interval}})")
-alertcondition(prXUp, "Pressure Cross haussier", "Pression : les acheteurs prennent la main sur {{ticker}} ({{interval}})")
-alertcondition(prXDn, "Pressure Cross baissier", "Pression : les vendeurs prennent la main sur {{ticker}} ({{interval}})")
-
-// ============================================================================
 // 8. TABLEAU
 // ============================================================================
 string dashPos = dashPosIn == "Bottom Right" ? position.bottom_right : dashPosIn == "Top Left" ? position.top_left : dashPosIn == "Bottom Left" ? position.bottom_left : position.top_right
-var table dash = table.new(dashPos, 2, 5, border_width = 1)
+var table dash = table.new(dashPos, 2, 4, border_width = 1)
 
 if barstate.islast
-    table.clear(dash, 0, 0, 1, 4)
+    table.clear(dash, 0, 0, 1, 3)
     if showDash
         color bg  = color.new(chart.bg_color, 10)
         color mut = color.new(txtCol, 40)
@@ -443,10 +361,6 @@ if barstate.islast
         string lastTxt = lastSfpDir == 0 ? "—" : (lastSfpDir == 1 ? "▲ " : "▼ ") + (na(lastVolPct) ? "vol. n/d" : str.tostring(lastVolPct, "#.#") + " % hors swing")
         table.cell(dash, 0, 3, "Dernier SFP", text_color = mut, bgcolor = bg, text_size = size.small, text_halign = text.align_left)
         table.cell(dash, 1, 3, lastTxt, text_color = lastSfpDir == 1 ? bullCol : lastSfpDir == -1 ? bearCol : mut, bgcolor = bg, text_size = size.small)
-        if prOn
-            string prTxt = (prNet >= 0 ? "Achat " : "Vente ") + str.tostring(math.abs(prNet), "#") + " % · fond " + (prCore > 0 ? "▲" : prCore < 0 ? "▼" : "—") + (prStrongUp or prStrongDn ? " · étiré" : prEstUp or prEstDn ? " · installé" : "")
-            table.cell(dash, 0, 4, "Pression", text_color = mut, bgcolor = bg, text_size = size.small, text_halign = text.align_left)
-            table.cell(dash, 1, 4, prTxt, text_color = prNet >= 0 ? prBullC : prBearC, bgcolor = bg, text_size = size.small)
 
 // ============================================================================
 // 9. ALERTES
