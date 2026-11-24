@@ -17,6 +17,7 @@ Indicateurs TradingView réécrits en MQL5, avec le même calcul et le même ren
 | `Indicators/CX_RangeBreaker.mq5` | Recréation (code fermé) : compression, cassures et retournements de mèche |
 | `Indicators/CX_BosChoch.mq5` | BOS & CHoCH (pivots, cassures à la clôture, tendance) |
 | `Indicators/CX_LiqSmcTjr.mq5` | Liquidity Swings & Sweeps + TJR Swing High/Low + BOS + FluidTrades SMC Lite + IMFVG, affichage TradingView (même calcul que `Pine/CX_LiqSmcTjr.pine`) |
+| `Indicators/CX_Systeme.mq5` | MT5 : CX Système NAS100 — biais D1/H4/H1 + pression, carte de liquidité (heure de New York), SFP → FVG → MSS avec filtre d'épuisement (9/13, Covered), TP sur niveaux, lot selon le risque, tableau et alertes |
 | `Pine/CX_Liquidity.pine` | TradingView (Pine v6) : séances et liquidité ISLB, sweeps, premium / discount, biais, POI |
 | `Pine/CX_Setups.pine` | TradingView (Pine v6) : FVG HTF, 4 setups avec tableaux, entrée / SL / TP |
 | `Pine/CX_SweepsSwings.pine` | TradingView (Pine v5) : Liquidity Sweeps + Liquidity Swings (LuxAlgo) + BOS & CHoCH réunis |
