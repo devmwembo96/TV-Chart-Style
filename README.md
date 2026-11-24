@@ -23,7 +23,7 @@ Indicateurs TradingView réécrits en MQL5, avec le même calcul et le même ren
 | `Pine/CX_Composition.pine` | TradingView (Pine v6) : SMC (structure) + IMFVG + Reversal Trap + Liquidity Swings + H4 précédente + Liquidity Sweeps + Liquidity Pools + TJR Swing High/Low + BOS |
 | `Pine/CX_LiqSmcTjr.pine` | TradingView (Pine v6) : Liquidity Swings & Sweeps + TJR Swing High/Low + BOS + FluidTrades SMC Lite + IMFVG |
 | `Pine/CX_AVPT.pine` | TradingView (Pine v6) : Anchored VWAP Pullback & Target Zones [PhenLabs] sans courbe ni bandes VWAP, + tableau des signaux D1 → M5 (bas droite) |
-| `Pine/CX_LiqGrab.pine` | TradingView (Pine v6) : Liquidity Grab (SFP, validation volume UT inférieure) + FVG + MSS/BOS, signal et alerte SFP → FVG → MSS + Triad Frame Basic (sessions, PDH/PDL, PWH/PWL, PMH/PML, opens) |
+| `Pine/CX_LiqGrab.pine` | TradingView (Pine v6) : Liquidity Grab (SFP, validation volume UT inférieure) + FVG + MSS/BOS, signal et alerte SFP → FVG → MSS + pression achat / vente (bougies, Covered, Pressure Cross) + Triad Frame Basic (sessions, PDH/PDL, PWH/PWL, PMH/PML, opens) |
 
 ## Installation
 
