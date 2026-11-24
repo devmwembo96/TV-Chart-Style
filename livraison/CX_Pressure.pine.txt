@@ -72,8 +72,11 @@ float sellBase = ta.sma(sellE, normLen)
 float buyP  = ta.ema(nz(buyBase) > 0 ? 200.0 * buyE / buyBase : 0.0, smoothLen)
 float sellP = -ta.ema(nz(sellBase) > 0 ? 200.0 * sellE / sellBase : 0.0, smoothLen)
 
-// dominance nette (acheteurs − vendeurs), amplifiée pour la lecture
-float netP  = (buyP + sellP) * 2.0
+// dominance nette (acheteurs − vendeurs), rapportée à sa dispersion habituelle :
+// ±150 ≈ dominance normale, ±400 et plus = dominance exceptionnelle
+float netRaw = buyP + sellP
+float netSd  = ta.stdev(netRaw, normLen)
+float netP   = nz(netSd) > 0 ? netRaw / netSd * 150.0 : 0.0
 float fastT = ta.ema(netP, fastLen)
 float coreT = ta.ema(netP, coreLen)
 
@@ -128,32 +131,32 @@ color buyColN  = color.new(bullCol, math.round(80 - 70 * nz(bullStr) / 100))
 color sellColN = color.new(bearCol, math.round(80 - 70 * nz(bearStr) / 100))
 color buyColF  = shortCov and showCover ? scCol : buyColN
 color sellColF = longCov and showCover ? lcCol : sellColN
-plot(showCols ? buyP : na,  "Pression acheteuse", color = buyColF,  style = plot.style_columns)
-plot(showCols ? sellP : na, "Pression vendeuse",  color = sellColF, style = plot.style_columns)
+plot(showCols ? buyP : na,  "Pression acheteuse", color = buyColF,  style = plot.style_columns, display = display.pane + display.data_window)
+plot(showCols ? sellP : na, "Pression vendeuse",  color = sellColF, style = plot.style_columns, display = display.pane + display.data_window)
 
 // Core Trend (fond) et Fast Trend (rapide)
 color coreCol = coreT >= 0 ? color.new(bullCol, 40) : color.new(bearCol, 40)
-plot(showCore ? coreT : na, "Core Trend", color = coreCol, linewidth = 1)
+plot(showCore ? coreT : na, "Core Trend", color = coreCol, linewidth = 1, display = display.pane + display.data_window)
 color fastCol = fastT >= fastT[1] ? bullCol : bearCol
-plot(showFast ? fastT : na, "Fast Trend (halo)", color = color.new(fastCol, 80), linewidth = 6)
-plot(showFast ? fastT : na, "Fast Trend", color = fastCol, linewidth = 2)
+plot(showFast ? fastT : na, "Fast Trend (halo)", color = color.new(fastCol, 80), linewidth = 6, display = display.pane + display.data_window)
+plot(showFast ? fastT : na, "Fast Trend", color = fastCol, linewidth = 2, display = display.pane + display.data_window)
 
 // Strong Trend : points sur le Fast Trend
-plot(showStrong and (strongUp or strongDn) ? fastT : na, "Strong Trend", color = strongUp ? bullCol : bearCol, style = plot.style_circles, linewidth = 4)
+plot(showStrong and (strongUp or strongDn) ? fastT : na, "Strong Trend", color = strongUp ? bullCol : bearCol, style = plot.style_circles, linewidth = 4, display = display.pane + display.data_window)
 
 // Established Trend : ligne épaisse en tirets autour de ±120
-plot(showEst and estUp ? 120 : na, "Established Trend haussier", color = bullCol, style = plot.style_cross, linewidth = 4)
-plot(showEst and estDn ? -120 : na, "Established Trend baissier", color = bearCol, style = plot.style_cross, linewidth = 4)
+plot(showEst and estUp ? 120 : na, "Established Trend haussier", color = bullCol, style = plot.style_cross, linewidth = 4, display = display.pane + display.data_window)
+plot(showEst and estDn ? -120 : na, "Established Trend baissier", color = bearCol, style = plot.style_cross, linewidth = 4, display = display.pane + display.data_window)
 
 // Pressure Cross (gros points) et Pre Signals (petits points) à ±450
-plot(showCross and crossUp ? 450 : na, "Pressure Cross haussier", color = bullCol, style = plot.style_circles, linewidth = 5)
-plot(showCross and crossDn ? -450 : na, "Pressure Cross baissier", color = bearCol, style = plot.style_circles, linewidth = 5)
-plot(showPre and preUp ? 450 : na, "Pre Signal haussier", color = color.new(bullCol, 45), style = plot.style_circles, linewidth = 2)
-plot(showPre and preDn ? -450 : na, "Pre Signal baissier", color = color.new(bearCol, 45), style = plot.style_circles, linewidth = 2)
+plot(showCross and crossUp ? 450 : na, "Pressure Cross haussier", color = bullCol, style = plot.style_circles, linewidth = 5, display = display.pane + display.data_window)
+plot(showCross and crossDn ? -450 : na, "Pressure Cross baissier", color = bearCol, style = plot.style_circles, linewidth = 5, display = display.pane + display.data_window)
+plot(showPre and preUp ? 450 : na, "Pre Signal haussier", color = color.new(bullCol, 45), style = plot.style_circles, linewidth = 2, display = display.pane + display.data_window)
+plot(showPre and preDn ? -450 : na, "Pre Signal baissier", color = color.new(bearCol, 45), style = plot.style_circles, linewidth = 2, display = display.pane + display.data_window)
 
 // Long / Short Covered : repère au-dessus / au-dessous des colonnes
-plotshape(showCover and shortCov, "Short Covered", shape.diamond, location.bottom, scCol, size = size.tiny)
-plotshape(showCover and longCov,  "Long Covered",  shape.diamond, location.top,    lcCol, size = size.tiny)
+plotshape(showCover and shortCov, "Short Covered", shape.diamond, location.bottom, scCol, size = size.tiny, display = display.pane + display.data_window)
+plotshape(showCover and longCov,  "Long Covered",  shape.diamond, location.top,    lcCol, size = size.tiny, display = display.pane + display.data_window)
 
 // couleur des bougies du graphique principal (option)
 barcolor(colorBars ? (netP >= 0 ? color.new(bullCol, math.round(70 - 60 * nz(bullStr) / 100)) : color.new(bearCol, math.round(70 - 60 * nz(bearStr) / 100))) : na, title = "Bougies selon la pression")
@@ -174,10 +177,11 @@ if barstate.islast
     if showGauge
         float bs = nz(bullStr)
         float rs = nz(bearStr)
-        gBull := box.new(bar_index + 3, 4.0 * bs, bar_index + 4, 0, border_color = bullCol, bgcolor = color.new(bullCol, 30))
-        gBear := box.new(bar_index + 3, 0, bar_index + 4, -4.0 * rs, border_color = bearCol, bgcolor = color.new(bearCol, 30))
-        lBull := label.new(bar_index + 5, 4.0 * bs, str.tostring(bs, "#") + "% Bullish Strength", style = label.style_label_left, color = color.new(color.black, 100), textcolor = bullCol, size = size.small)
-        lBear := label.new(bar_index + 5, -4.0 * rs, str.tostring(rs, "#") + "% Bearish Strength", style = label.style_label_left, color = color.new(color.black, 100), textcolor = bearCol, size = size.small)
+        // deux barres à partir de zéro (hauteur = force, 100 % = ±400) et textes à hauteur fixe
+        gBull := box.new(bar_index + 3, math.max(4.0 * bs, 8.0), bar_index + 5, 0, border_color = bullCol, bgcolor = color.new(bullCol, 30))
+        gBear := box.new(bar_index + 3, 0, bar_index + 5, -math.max(4.0 * rs, 8.0), border_color = bearCol, bgcolor = color.new(bearCol, 30))
+        lBull := label.new(bar_index + 6, 300, str.tostring(bs, "#") + "% Bullish Strength", style = label.style_label_left, color = color.new(color.black, 100), textcolor = bullCol, size = size.small)
+        lBear := label.new(bar_index + 6, -300, str.tostring(rs, "#") + "% Bearish Strength", style = label.style_label_left, color = color.new(color.black, 100), textcolor = bearCol, size = size.small)
 
 string tblPos = tblPosIn == "Bottom Right" ? position.bottom_right : tblPosIn == "Top Left" ? position.top_left : tblPosIn == "Bottom Left" ? position.bottom_left : position.top_right
 var table tbl = table.new(tblPos, 2, 2, border_width = 0)
