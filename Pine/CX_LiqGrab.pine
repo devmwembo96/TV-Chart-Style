@@ -1,0 +1,364 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// CX – Liquidity Grab (SFP) · FVG · MSS/BOS
+// Écriture originale inspirée du principe « ICT Liquidity Grab + FVG + MSS/BOS » :
+//   1. un SFP (prise de liquidité au-dessus / au-dessous d'un swing, clôture revenue dedans)
+//   2. puis un FVG dans le sens du retournement
+//   3. puis un MSS (cassure de structure contre la tendance) → signal d'entrée + alerte
+
+//@version=6
+indicator("CX Liquidity Grab · FVG · MSS/BOS", shorttitle = "CX LGrab", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
+
+// ============================================================================
+// 1. RÉGLAGES
+// ============================================================================
+string G_SFP = "Swing Failure Pattern"
+bool   showSfp   = input.bool(true, "Show SFP", group = G_SFP)
+int    sfpLen    = input.int(5, "Swings", minval = 2, maxval = 50, group = G_SFP, tooltip = "Bougies à gauche et à droite pour valider le swing dont la liquidité est prise.")
+
+string G_VAL = "Validation par le volume (UT inférieure)"
+bool   useVal    = input.bool(false, "Valider les SFP par le volume", group = G_VAL, tooltip = "Part du volume de la bougie SFP traitée au-delà du swing, mesurée sur l'UT inférieure. Le SFP n'est retenu que si cette part dépasse le seuil.")
+string ltfIn     = input.string("Auto", "UT inférieure", options = ["Auto", "1", "3", "5", "15", "30", "60", "240"], group = G_VAL)
+float  valThr    = input.float(10.0, "Seuil de volume hors swing (%)", minval = 0.0, maxval = 100.0, step = 1.0, group = G_VAL)
+
+string G_STY = "Style"
+bool   showLbl   = input.bool(true, "Show Label", group = G_STY)
+color  bullCol   = input.color(#089981, "Lines / Labels", inline = "ll", group = G_STY)
+color  bearCol   = input.color(#F23645, "", inline = "ll", group = G_STY)
+color  bullWick  = input.color(color.new(#089981, 75), "SFP Wicks", inline = "wk", group = G_STY)
+color  bearWick  = input.color(color.new(#F23645, 75), "", inline = "wk", group = G_STY)
+bool   sfpHist   = input.bool(false, "Show History (Invalidated SFPs)", group = G_STY, tooltip = "Garde à l'écran, en pâle, les SFP invalidés (clôture au-delà de la mèche du SFP).")
+
+string G_THM = "Theme"
+string theme     = input.string("Auto", "Theme", options = ["Auto", "Dark", "Light"], group = G_THM)
+
+string G_MS  = "Market Structure"
+int    pivLen    = input.int(3, "Pivot Strength", minval = 1, maxval = 20, group = G_MS)
+bool   showFrac  = input.bool(false, "Show Fractals", inline = "fr", group = G_MS)
+color  fracUpCol = input.color(#2962FF, "", inline = "fr", group = G_MS)
+color  fracDnCol = input.color(#F23645, "", inline = "fr", group = G_MS)
+bool   showMs    = input.bool(true, "Show BOS/MSS", group = G_MS)
+bool   msHist    = input.bool(true, "Show History", group = G_MS, tooltip = "Désactivé : seuls le dernier BOS/MSS haussier et baissier restent affichés.")
+string msStyleIn = input.string("Solid", "Line Style", options = ["Solid", "Dashed", "Dotted"], group = G_MS)
+
+string G_FVG = "FVG"
+bool   showFvg   = input.bool(true, "Show FVG", group = G_FVG)
+bool   showFvgLb = input.bool(false, "Show FVG Label", group = G_FVG)
+float  fvgInv    = input.float(70.0, "Fill % to Invalidate", minval = 1.0, maxval = 100.0, step = 5.0, group = G_FVG)
+color  fvgBullC  = input.color(color.new(#089981, 85), "Bullish / Bearish FVG", inline = "fv", group = G_FVG)
+color  fvgBearC  = input.color(color.new(#F23645, 85), "", inline = "fv", group = G_FVG)
+
+string G_SET = "Setup SFP + FVG + MSS"
+bool   showSet   = input.bool(true, "Afficher les signaux d'entrée", group = G_SET)
+int    setWin    = input.int(30, "Fenêtre après le SFP (bougies)", minval = 3, maxval = 200, group = G_SET, tooltip = "Le FVG et le MSS doivent apparaître dans ce nombre de bougies après le SFP.")
+
+string G_DSH = "Dashboard"
+bool   showDash  = input.bool(true, "Afficher le tableau", group = G_DSH)
+string dashPosIn = input.string("Top Right", "Position", options = ["Top Right", "Bottom Right", "Top Left", "Bottom Left"], group = G_DSH)
+
+// ============================================================================
+// 2. OUTILS
+// ============================================================================
+color txtCol = theme == "Dark" ? color.white : theme == "Light" ? color.black : chart.fg_color
+string msStyle = msStyleIn == "Dashed" ? line.style_dashed : msStyleIn == "Dotted" ? line.style_dotted : line.style_solid
+
+f_autoLtf() =>
+    int s = timeframe.in_seconds()
+    s <= 900 ? "1" : s <= 3600 ? "5" : s <= 14400 ? "15" : s <= 86400 ? "60" : "240"
+
+string ltf = ltfIn == "Auto" ? f_autoLtf() : ltfIn
+
+type Sfp
+    int   dir      // 1 = haussier (liquidité basse prise), -1 = baissier
+    float lvl      // niveau du swing pris
+    float ext      // extrême de la mèche du SFP
+    line  ln
+    box   bx
+    label lb
+    bool  alive
+
+var array<Sfp> sfps = array.new<Sfp>()
+var array<box> fvgs = array.new<box>()
+var array<int> fvgDir = array.new<int>()
+
+// ============================================================================
+// 3. VOLUME DE L'UT INFÉRIEURE
+// ============================================================================
+[ltfH, ltfL, ltfV] = request.security_lower_tf(syminfo.tickerid, ltf, [high, low, volume])
+
+// part (%) du volume de la bougie traitée au-delà d'un niveau (dir 1 : sous le niveau, -1 : au-dessus)
+f_outVolPct(float lvl, int dir) =>
+    float tot = 0.0
+    float out = 0.0
+    int n = array.size(ltfV)
+    if n > 0
+        for i = 0 to n - 1
+            float v = nz(array.get(ltfV, i))
+            tot += v
+            if dir == 1 ? array.get(ltfL, i) < lvl : array.get(ltfH, i) > lvl
+                out += v
+    tot > 0 ? out / tot * 100.0 : na
+
+// ============================================================================
+// 4. SWING FAILURE PATTERN (prise de liquidité)
+// ============================================================================
+float swH = ta.pivothigh(high, sfpLen, sfpLen)
+float swL = ta.pivotlow(low, sfpLen, sfpLen)
+
+var float lvlH = na
+var int   lvlHB = na
+var float lvlL = na
+var int   lvlLB = na
+
+if not na(swH)
+    lvlH  := swH
+    lvlHB := bar_index - sfpLen
+if not na(swL)
+    lvlL  := swL
+    lvlLB := bar_index - sfpLen
+
+bool rawBearSfp = not na(lvlH) and high > lvlH and close < lvlH and open < lvlH
+bool rawBullSfp = not na(lvlL) and low < lvlL and close > lvlL and open > lvlL
+
+float bearVolPct = rawBearSfp ? f_outVolPct(lvlH, -1) : na
+float bullVolPct = rawBullSfp ? f_outVolPct(lvlL, 1) : na
+bool  bearValid  = not useVal or na(bearVolPct) or bearVolPct >= valThr
+bool  bullValid  = not useVal or na(bullVolPct) or bullVolPct >= valThr
+
+bool bearSfp = rawBearSfp and bearValid
+bool bullSfp = rawBullSfp and bullValid
+
+var float lastVolPct = na
+var int   lastSfpDir = 0
+
+f_newSfp(int dir, float lvl, int lvlBar, float ext) =>
+    color c  = dir == 1 ? bullCol : bearCol
+    color wc = dir == 1 ? bullWick : bearWick
+    line  l  = line.new(lvlBar, lvl, bar_index, lvl, color = c, width = 1)
+    box   b  = box.new(bar_index - 1, math.max(lvl, ext), bar_index + 1, math.min(lvl, ext), border_color = c, border_style = line.style_dotted, bgcolor = wc)
+    label t  = showLbl ? label.new(bar_index, ext, "✕", style = label.style_none, textcolor = c, size = size.small, yloc = dir == 1 ? yloc.belowbar : yloc.abovebar) : na
+    array.push(sfps, Sfp.new(dir, lvl, ext, l, b, t, true))
+    if array.size(sfps) > 150
+        Sfp o = array.shift(sfps)
+        line.delete(o.ln)
+        box.delete(o.bx)
+        label.delete(o.lb)
+
+if showSfp and bearSfp
+    f_newSfp(-1, lvlH, lvlHB, high)
+if showSfp and bullSfp
+    f_newSfp(1, lvlL, lvlLB, low)
+if bearSfp
+    lastVolPct := bearVolPct
+    lastSfpDir := -1
+    lvlH := na
+if bullSfp
+    lastVolPct := bullVolPct
+    lastSfpDir := 1
+    lvlL := na
+// clôture au-delà du swing : vraie cassure, la liquidité est consommée
+if not na(lvlH) and close > lvlH
+    lvlH := na
+if not na(lvlL) and close < lvlL
+    lvlL := na
+
+// invalidation : clôture au-delà de la mèche du SFP
+if array.size(sfps) > 0
+    for i = 0 to array.size(sfps) - 1
+        Sfp s = array.get(sfps, i)
+        if s.alive and (s.dir == 1 ? close < s.ext : close > s.ext)
+            s.alive := false
+            if sfpHist
+                color fc = color.new(s.dir == 1 ? bullCol : bearCol, 75)
+                line.set_color(s.ln, fc)
+                box.set_border_color(s.bx, fc)
+                box.set_bgcolor(s.bx, color.new(fc, 95))
+                label.set_textcolor(s.lb, fc)
+            else
+                line.delete(s.ln)
+                box.delete(s.bx)
+                label.delete(s.lb)
+
+// ============================================================================
+// 5. FAIR VALUE GAPS
+// ============================================================================
+bool bullFvg = low > high[2] and close[1] > high[2]
+bool bearFvg = high < low[2] and close[1] < low[2]
+
+if showFvg and bullFvg
+    array.push(fvgs, box.new(bar_index - 2, low, bar_index, high[2], border_color = na, bgcolor = fvgBullC, extend = extend.right, text = showFvgLb ? "FVG" : "", text_color = color.new(bullCol, 30), text_size = size.tiny, text_halign = text.align_right))
+    array.push(fvgDir, 1)
+if showFvg and bearFvg
+    array.push(fvgs, box.new(bar_index - 2, low[2], bar_index, high, border_color = na, bgcolor = fvgBearC, extend = extend.right, text = showFvgLb ? "FVG" : "", text_color = color.new(bearCol, 30), text_size = size.tiny, text_halign = text.align_right))
+    array.push(fvgDir, -1)
+
+// remplissage : le FVG disparaît quand X % de sa hauteur est comblé
+if array.size(fvgs) > 0
+    for i = array.size(fvgs) - 1 to 0
+        box  b   = array.get(fvgs, i)
+        int  d   = array.get(fvgDir, i)
+        float tp = box.get_top(b)
+        float bt = box.get_bottom(b)
+        float hgt = math.max(tp - bt, syminfo.mintick)
+        bool newOne = box.get_left(b) == bar_index - 2
+        float fillPct = d == 1 ? (tp - low) / hgt * 100.0 : (high - bt) / hgt * 100.0
+        if not newOne and fillPct >= fvgInv
+            box.delete(b)
+            array.remove(fvgs, i)
+            array.remove(fvgDir, i)
+if array.size(fvgs) > 100
+    box.delete(array.shift(fvgs))
+    array.shift(fvgDir)
+
+// ============================================================================
+// 6. STRUCTURE : FRACTALES, BOS / MSS
+// ============================================================================
+float frH = ta.pivothigh(high, pivLen, pivLen)
+float frL = ta.pivotlow(low, pivLen, pivLen)
+
+plotshape(showFrac and not na(frH), "Fractal haut", shape.triangledown, location.abovebar, fracUpCol, offset = -pivLen, size = size.tiny)
+plotshape(showFrac and not na(frL), "Fractal bas", shape.triangleup, location.belowbar, fracDnCol, offset = -pivLen, size = size.tiny)
+
+var float msH = na
+var int   msHB = na
+var float msL = na
+var int   msLB = na
+var int   trend = 0
+var line  lastBullLn = na
+var label lastBullLb = na
+var line  lastBearLn = na
+var label lastBearLb = na
+
+if not na(frH)
+    msH  := frH
+    msHB := bar_index - pivLen
+if not na(frL)
+    msL  := frL
+    msLB := bar_index - pivLen
+
+bool bullBreak = not na(msH) and close > msH
+bool bearBreak = not na(msL) and close < msL
+bool bullMss = bullBreak and trend == -1
+bool bearMss = bearBreak and trend == 1
+bool bullBos = bullBreak and not bullMss
+bool bearBos = bearBreak and not bearMss
+
+f_ms(int fromBar, float lvl, string tag, color c, bool up) =>
+    line  l = line.new(fromBar, lvl, bar_index, lvl, color = c, style = msStyle, width = 1)
+    label t = showLbl ? label.new(math.round((fromBar + bar_index) / 2), lvl, tag, style = up ? label.style_label_down : label.style_label_up, color = color.new(c, 100), textcolor = c, size = size.tiny) : na
+    [l, t]
+
+if bullBreak
+    if showMs
+        if not msHist
+            line.delete(lastBullLn)
+            label.delete(lastBullLb)
+        [l, t] = f_ms(msHB, msH, bullMss ? "MSS" : "BOS", bullCol, true)
+        lastBullLn := l
+        lastBullLb := t
+    trend := 1
+    msH := na
+if bearBreak
+    if showMs
+        if not msHist
+            line.delete(lastBearLn)
+            label.delete(lastBearLb)
+        [l, t] = f_ms(msLB, msL, bearMss ? "MSS" : "BOS", bearCol, false)
+        lastBearLn := l
+        lastBearLb := t
+    trend := -1
+    msL := na
+
+// ============================================================================
+// 7. SETUP COMPLET : SFP → FVG → MSS
+// ============================================================================
+var int   bSfpBar = na
+var float bSfpExt = na
+var bool  bFvgOk  = false
+var bool  bMssOk  = false
+var int   sSfpBar = na
+var float sSfpExt = na
+var bool  sFvgOk  = false
+var bool  sMssOk  = false
+
+bool buySig  = false
+bool sellSig = false
+
+// haussier : liquidité basse prise
+if bullSfp
+    bSfpBar := bar_index
+    bSfpExt := low
+    bFvgOk  := false
+    bMssOk  := false
+else if not na(bSfpBar)
+    if close < bSfpExt or bar_index - bSfpBar > setWin
+        bSfpBar := na
+    else
+        if bullFvg
+            bFvgOk := true
+        if bullMss
+            bMssOk := true
+        if bFvgOk and bMssOk
+            buySig  := true
+            bSfpBar := na
+
+// baissier : liquidité haute prise
+if bearSfp
+    sSfpBar := bar_index
+    sSfpExt := high
+    sFvgOk  := false
+    sMssOk  := false
+else if not na(sSfpBar)
+    if close > sSfpExt or bar_index - sSfpBar > setWin
+        sSfpBar := na
+    else
+        if bearFvg
+            sFvgOk := true
+        if bearMss
+            sMssOk := true
+        if sFvgOk and sMssOk
+            sellSig := true
+            sSfpBar := na
+
+if showSet and buySig
+    label.new(bar_index, low, "BUY", style = label.style_label_up, color = bullCol, textcolor = color.white, size = size.small, yloc = yloc.belowbar)
+if showSet and sellSig
+    label.new(bar_index, high, "SELL", style = label.style_label_down, color = bearCol, textcolor = color.white, size = size.small, yloc = yloc.abovebar)
+
+// ============================================================================
+// 8. TABLEAU
+// ============================================================================
+string dashPos = dashPosIn == "Bottom Right" ? position.bottom_right : dashPosIn == "Top Left" ? position.top_left : dashPosIn == "Bottom Left" ? position.bottom_left : position.top_right
+var table dash = table.new(dashPos, 2, 4, border_width = 1)
+
+if barstate.islast
+    table.clear(dash, 0, 0, 1, 3)
+    if showDash
+        color bg  = color.new(chart.bg_color, 10)
+        color mut = color.new(txtCol, 40)
+        table.set_border_color(dash, color.new(txtCol, 85))
+        table.cell(dash, 0, 0, "Liquidity Grab", text_color = txtCol, bgcolor = bg, text_size = size.small, text_formatting = text.format_bold, text_halign = text.align_left)
+        table.cell(dash, 1, 0, trend == 1 ? "▲ Haussier" : trend == -1 ? "▼ Baissier" : "—", text_color = trend == 1 ? bullCol : trend == -1 ? bearCol : mut, bgcolor = bg, text_size = size.small, text_formatting = text.format_bold)
+        table.cell(dash, 0, 1, "UT inférieure", text_color = mut, bgcolor = bg, text_size = size.small, text_halign = text.align_left)
+        table.cell(dash, 1, 1, ltf + (ltfIn == "Auto" ? " (auto)" : ""), text_color = txtCol, bgcolor = bg, text_size = size.small)
+        table.cell(dash, 0, 2, "Validation volume", text_color = mut, bgcolor = bg, text_size = size.small, text_halign = text.align_left)
+        table.cell(dash, 1, 2, useVal ? "Active ≥ " + str.tostring(valThr, "#") + " %" : "Désactivée", text_color = useVal ? txtCol : mut, bgcolor = bg, text_size = size.small)
+        string lastTxt = lastSfpDir == 0 ? "—" : (lastSfpDir == 1 ? "▲ " : "▼ ") + (na(lastVolPct) ? "vol. n/d" : str.tostring(lastVolPct, "#.#") + " % hors swing")
+        table.cell(dash, 0, 3, "Dernier SFP", text_color = mut, bgcolor = bg, text_size = size.small, text_halign = text.align_left)
+        table.cell(dash, 1, 3, lastTxt, text_color = lastSfpDir == 1 ? bullCol : lastSfpDir == -1 ? bearCol : mut, bgcolor = bg, text_size = size.small)
+
+// ============================================================================
+// 9. ALERTES
+// ============================================================================
+alertcondition(bullSfp, "SFP haussier", "Liquidity Grab : SFP haussier (liquidité basse prise) sur {{ticker}} ({{interval}})")
+alertcondition(bearSfp, "SFP baissier", "Liquidity Grab : SFP baissier (liquidité haute prise) sur {{ticker}} ({{interval}})")
+alertcondition(bullFvg or bearFvg, "Nouveau FVG", "Liquidity Grab : nouveau FVG sur {{ticker}} ({{interval}})")
+alertcondition(bullMss or bearMss, "MSS", "Liquidity Grab : MSS sur {{ticker}} ({{interval}})")
+alertcondition(bullBos or bearBos, "BOS", "Liquidity Grab : BOS sur {{ticker}} ({{interval}})")
+alertcondition(buySig, "Setup BUY (SFP + FVG + MSS)", "Liquidity Grab : setup BUY complet (SFP + FVG + MSS) sur {{ticker}} ({{interval}})")
+alertcondition(sellSig, "Setup SELL (SFP + FVG + MSS)", "Liquidity Grab : setup SELL complet (SFP + FVG + MSS) sur {{ticker}} ({{interval}})")
+alertcondition(buySig or sellSig, "Setup complet (BUY ou SELL)", "Liquidity Grab : setup complet SFP + FVG + MSS sur {{ticker}} ({{interval}})")
+
+if buySig
+    alert("Liquidity Grab : setup BUY (SFP + FVG + MSS) sur " + syminfo.ticker, alert.freq_once_per_bar_close)
+if sellSig
+    alert("Liquidity Grab : setup SELL (SFP + FVG + MSS) sur " + syminfo.ticker, alert.freq_once_per_bar_close)
