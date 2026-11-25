@@ -13,7 +13,7 @@
 //| Indicateur seul : aucun ordre. Bougies clôturées uniquement.     |
 //+------------------------------------------------------------------+
 #property copyright   "CX Système"
-#property version     "2.00"
+#property version     "2.01"
 #property description "CX Système NAS100 : Liquidity Grab (SFP) façon TradingView, carte de liquidité (heure de New York), FVG M15 / H1, petit tableau et alertes."
 #property indicator_chart_window
 #property indicator_buffers 0
@@ -55,7 +55,7 @@ input bool     InpShowDay  = true;            // PDH / PDL
 input bool     InpShowWeek = true;            // PWH / PWL
 input bool     InpShowSess = true;            // Sessions : Asia, London, NY AM, Lunch, NY PM
 input bool     InpShowOpen = true;            // Opens 00:00 / 08:30 / 09:30
-input bool     InpShowTaken = true;           // Garder les niveaux pris (pointillés pâles)
+input bool     InpShowTaken = true;           // Garder les niveaux pris (traits pâles)
 input color    ColDay      = C'76,175,80';    // PDH / PDL
 input color    ColWeek     = C'0,188,212';    // PWH / PWL
 input color    ColSess     = C'120,123,134';  // Sessions
@@ -799,10 +799,10 @@ void Render()
       color c = SlotColor(s.grp);
       if(s.taken)
         {
-         if(InpShowTaken) HLevel(s.x0, s.xTaken, s.price, A(c, 65), dot, "", false);
+         if(InpShowTaken) HLevel(s.x0, s.xTaken, s.price, A(c, 65), sol, "", false);
          continue;
         }
-      HLevel(s.x0, ext, s.price, A(c, s.grp == 3 ? 40 : 10), s.grp == 3 ? dot : (s.grp == 2 ? dsh : sol), s.name, true);
+      HLevel(s.x0, ext, s.price, A(c, s.grp == 3 ? 40 : 10), sol, s.name, true);
      }
 
    //--- Liquidity Grab : trait du swing, mèche en pointillés, ✕
