@@ -1,5 +1,6 @@
 ﻿// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
 // Partie 10 : « Triad Frame Basic - Session and Key Levels » © TriadSignals (MPL 2.0), code d’origine.
+// Partie 11 : CX Signal (portage Pine de CX_Signal.mq5 1.10) : Strong de CX Press après prise de la carte + croix ratée.
 // CX – Liquidity Grab (SFP) · FVG · MSS/BOS
 // Écriture originale inspirée du principe « ICT Liquidity Grab + FVG + MSS/BOS » :
 //   1. un SFP (prise de liquidité au-dessus / au-dessous d'un swing, clôture revenue dedans)
@@ -732,3 +733,271 @@ if alertMonthly and pmhUp
     alert(px + "Just took PMH " + str.tostring(pmHigh, format.mintick), alert.freq_once_per_bar)
 if alertMonthly and pmlDn
     alert(px + "Just took PML " + str.tostring(pmLow, format.mintick), alert.freq_once_per_bar)
+
+// ============================================================================
+// 11. CX SIGNAL – BUY / SELL AVEC SL ET TP (portage de CX_Signal.mq5 1.10)
+//   a) Strong Trend de CX Press dans le sens d'une prise de la carte
+//      (PDH/PDL, PWH/PWL, haut / bas de session, heure de New York),
+//      au plus N bougies après, en NY AM (07:00 – 11:30 New York).
+//      Entrée à la clôture, SL = 2 ATR(14), TP = 1 × SL, pause 6.
+//   b) « Croix ratée » (BUY ✕ / SELL ✕) : croix ✕ (SFP) contre le Core
+//      de CX Press, encore valide à la clôture de la bougie suivante
+//      → suivre le Core. SL = 1 ATR(14), TP = 2 × SL, pause 6.
+//   Calcul sur l'UT des signaux (M15 par défaut), bougies clôturées.
+//   TP / SL suivis sur les bougies du graphique (même bougie : SL d'abord).
+// ============================================================================
+string G_CS1 = "11. CX Signal · Signal (Strong après prise de la carte)"
+bool   csOn       = input.bool(true, "Afficher CX Signal", group = G_CS1)
+string csTf       = input.timeframe("15", "UT des signaux", group = G_CS1)
+int    csWindow   = input.int(12, "Prise de la carte : au plus N bougies avant le Strong", minval = 0, maxval = 100, group = G_CS1)
+bool   csNyAmOnly = input.bool(true, "Seulement en NY AM (07:00 – 11:30 New York)", group = G_CS1)
+int    csPause    = input.int(6, "Bougies sans nouveau signal après un signal", minval = 1, maxval = 100, group = G_CS1)
+float  csSlAtr    = input.float(2.0, "SL (× ATR 14)", minval = 0.1, step = 0.1, group = G_CS1)
+float  csTpR      = input.float(1.0, "TP (× SL)", minval = 0.1, step = 0.1, group = G_CS1)
+int    csHorizon  = input.int(48, "Fin du plan sans TP ni SL (bougies de l'UT des signaux)", minval = 1, maxval = 500, group = G_CS1)
+string G_CS2 = "11. CX Signal · « Croix ratée » (✕)"
+bool   csUseCross = input.bool(true, "Afficher les signaux « croix ratée » (✕)", group = G_CS2)
+float  csSlAtr2   = input.float(1.0, "SL (× ATR 14) ", minval = 0.1, step = 0.1, group = G_CS2)
+float  csTpR2     = input.float(2.0, "TP (× SL) ", minval = 0.1, step = 0.1, group = G_CS2)
+string G_CS3 = "11. CX Signal · Réglages de CX Press"
+int    csCandle   = input.int(14, "Candle Length", minval = 2, group = G_CS3)
+int    csSmooth   = input.int(3, "Smoothed", minval = 1, group = G_CS3)
+int    csNorm     = input.int(200, "Historique de référence", minval = 50, group = G_CS3)
+bool   csUseVol   = input.bool(true, "Pondérer par le volume relatif", group = G_CS3)
+int    csFastLen  = input.int(5, "Fast Trend", minval = 1, group = G_CS3)
+int    csCoreLen  = input.int(50, "Core Trend", minval = 2, group = G_CS3)
+float  csStrongSd = input.float(1.8, "Strong Trend : écarts-types", minval = 0.5, step = 0.1, group = G_CS3)
+string G_CS4 = "11. CX Signal · Affichage et alertes"
+int    csPlans    = input.int(3, "Plans de trade dessinés (les derniers)", minval = 0, maxval = 20, group = G_CS4)
+int    csTags     = input.int(6, "Étiquettes BUY / SELL (les dernières)", minval = 0, maxval = 50, group = G_CS4)
+color  csBull     = input.color(#00E6A8, "Haussier / TP", inline = "csc", group = G_CS4)
+color  csBear     = input.color(#FF3B69, "Baissier / SL", inline = "csc", group = G_CS4)
+bool   csAlEntry  = input.bool(true, "Alerte : nouveau signal BUY / SELL", group = G_CS4)
+bool   csAlTp     = input.bool(true, "Alerte : TP atteint", group = G_CS4)
+bool   csAlSl     = input.bool(true, "Alerte : SL touché", group = G_CS4)
+
+// --- calcul complet sur l'UT des signaux (une bougie = une exécution) ---------
+f_cxSig() =>
+    // CX Press (calcul de CX_Press.mq5)
+    float bRaw  = close - math.min(low, nz(close[1], open))
+    float sRaw  = math.max(high, nz(close[1], open)) - close
+    float vm    = ta.sma(volume, csCandle)
+    float rv    = csUseVol and nz(volume) > 0 and nz(vm) > 0 ? math.min(volume / vm, 5.0) : 1.0
+    float bE    = ta.ema(bRaw * rv, csCandle)
+    float sE    = ta.ema(sRaw * rv, csCandle)
+    float bb    = ta.sma(bE, csNorm)
+    float sb    = ta.sma(sE, csNorm)
+    float bp    = ta.ema(nz(bb) > 0 ? 200.0 * bE / bb : 0.0, csSmooth)
+    float sp    = ta.ema(nz(sb) > 0 ? 200.0 * sE / sb : 0.0, csSmooth)
+    float nRaw  = bp - sp
+    float nsd   = ta.stdev(nRaw, csNorm)
+    float nP    = nz(nsd) > 0 ? nRaw / nsd * 300.0 : 0.0
+    float fast  = ta.ema(nP, csFastLen)
+    float core  = ta.ema(nP, csCoreLen)
+    float fm    = ta.sma(fast, csNorm)
+    float fsd   = ta.stdev(fast, csNorm)
+    int   pStr  = not na(fm) and fast > 0 and core > 0 and fast > fm + csStrongSd * fsd ? 1 : not na(fm) and fast < 0 and core < 0 and fast < fm - csStrongSd * fsd ? -1 : 0
+    int   pCore = core > 0 ? 1 : core < 0 ? -1 : 0
+    float atr   = ta.atr(14)
+    // Croix ✕ (SFP brut de CX Système)
+    float pH = ta.pivothigh(high, sfpLen, sfpLen)
+    float pL = ta.pivotlow(low, sfpLen, sfpLen)
+    var float lvH = na
+    var float lvL = na
+    if not na(pH)
+        lvH := pH
+    if not na(pL)
+        lvL := pL
+    bool rBear = not na(lvH) and high > lvH and close < lvH and open < lvH
+    bool rBull = not na(lvL) and low < lvL and close > lvL and open > lvL
+    int  sfp   = rBear and rBull ? 0 : rBull ? 1 : rBear ? -1 : 0
+    if rBear
+        lvH := na
+    if rBull
+        lvL := na
+    if not na(lvH) and close > lvH
+        lvH := na
+    if not na(lvL) and close < lvL
+        lvL := na
+    // Carte de liquidité (heure de New York) : jour 18:00, semaine du dimanche 18:00, sessions
+    int  nyMin  = hour(time, "America/New_York") * 60 + minute(time, "America/New_York")
+    int  tShift = time + 6 * 3600000
+    int  dayKey = dayofmonth(tShift, "America/New_York")
+    bool newDay = dayKey != nz(dayKey[1], dayKey)
+    int  dowS   = dayofweek(tShift, "America/New_York")
+    bool newWk  = newDay and dowS == dayofweek.monday
+    int  ses    = nyMin >= 1080 or nyMin < 150 ? 0 : nyMin < 420 ? 1 : nyMin < 690 ? 2 : nyMin < 780 ? 3 : nyMin < 960 ? 4 : -1
+    var array<float> slP = array.new<float>(14, na)          // 0 PDH 1 PDL 2 PWH 3 PWL 4..13 sessions (haut, bas)
+    var array<bool>  slT = array.new<bool>(14, false)
+    var float dHi = na
+    var float dLo = na
+    var float wHi = na
+    var float wLo = na
+    var float sHi = na
+    var float sLo = na
+    var int   curS = -2
+    if newDay and not na(dHi)
+        array.set(slP, 0, dHi), array.set(slT, 0, false)
+        array.set(slP, 1, dLo), array.set(slT, 1, false)
+    if newDay
+        dHi := na
+        dLo := na
+    if newWk and not na(wHi)
+        array.set(slP, 2, wHi), array.set(slT, 2, false)
+        array.set(slP, 3, wLo), array.set(slT, 3, false)
+    if newWk
+        wHi := na
+        wLo := na
+    if ses != curS
+        if curS >= 0 and not na(sHi)
+            array.set(slP, 4 + curS * 2, sHi), array.set(slT, 4 + curS * 2, false)
+            array.set(slP, 5 + curS * 2, sLo), array.set(slT, 5 + curS * 2, false)
+        curS := ses
+        sHi := na
+        sLo := na
+    bool hiTaken = false
+    bool loTaken = false
+    for k = 0 to 13
+        float p = array.get(slP, k)
+        if not na(p) and not array.get(slT, k)
+            bool isHigh = k % 2 == 0
+            if isHigh and high > p
+                array.set(slT, k, true)
+                hiTaken := true
+            if not isHigh and low < p
+                array.set(slT, k, true)
+                loTaken := true
+    int sweep = hiTaken and not loTaken ? 1 : loTaken and not hiTaken ? -1 : 0
+    dHi := na(dHi) ? high : math.max(dHi, high)
+    dLo := na(dLo) ? low : math.min(dLo, low)
+    wHi := na(wHi) ? high : math.max(wHi, high)
+    wLo := na(wLo) ? low : math.min(wLo, low)
+    if curS >= 0
+        sHi := na(sHi) ? high : math.max(sHi, high)
+        sLo := na(sLo) ? low : math.min(sLo, low)
+    // Signaux
+    var int lastUp   = -100000
+    var int lastDn   = -100000
+    var int lastSig  = -100000
+    var int lastSig2 = -100000
+    if sweep == 1
+        lastUp := bar_index
+    if sweep == -1
+        lastDn := bar_index
+    int s1 = nz(sfp[1])
+    int xDir = 0
+    if csUseCross and s1 != 0 and nz(pCore[1]) == -s1 and (s1 == 1 ? close >= low[1] : close <= high[1]) and bar_index - lastSig2 >= csPause
+        lastSig2 := bar_index
+        xDir := -s1
+    int v = pStr != 0 and nz(pStr[1]) != pStr ? pStr : 0
+    int sDir = 0
+    if v != 0 and (not csNyAmOnly or ses == 2) and bar_index - (v == 1 ? lastUp : lastDn) <= csWindow and bar_index - lastSig >= csPause
+        lastSig := bar_index
+        sDir := v
+    // valeurs de la bougie clôturée précédente (appel avec lookahead_on : pas de repeinture)
+    [xDir[1], sDir[1], close[1], atr[1], low[1], high[1], time[1]]
+
+[csXDir, csSDir, csClose, csAtr, csLow, csHigh, csSigT] = request.security(syminfo.tickerid, csTf, f_cxSig(), lookahead = barmerge.lookahead_on)
+int csPer = timeframe.in_seconds(csTf) * 1000
+
+type CxPlan
+    int   dir
+    int   kind          // 1 Strong après prise de la carte, 2 croix ratée
+    int   sigTime
+    int   entryTime
+    int   endTime
+    float entry
+    float sl
+    float tp
+    float tpR
+    float sigY
+    float res
+    int   status        // 0 en cours, 1 TP, 2 SL, 3 fin sans TP ni SL
+
+var array<CxPlan> csPlansArr = array.new<CxPlan>()
+
+f_csNew(int dir, int kind, float slAtr, float tpR) =>
+    float rk = slAtr * csAtr
+    int   et = csSigT + csPer
+    CxPlan p = CxPlan.new(dir, kind, csSigT, et, et + csHorizon * csPer, csClose, csClose - dir * rk, csClose + dir * tpR * rk, tpR, dir == 1 ? csLow : csHigh, 0.0, 0)
+    array.push(csPlansArr, p)
+    if array.size(csPlansArr) > 60
+        array.shift(csPlansArr)
+    p
+
+f_r1(float v) =>
+    str.tostring(math.round(v * 10) / 10)
+
+bool csNew = csOn and not na(csSigT) and csSigT != nz(csSigT[1])
+if csNew and nz(csXDir) != 0
+    CxPlan q = f_csNew(csXDir, 2, csSlAtr2, csTpR2)
+    if csAlEntry
+        alert("CX Signal " + syminfo.ticker + " : " + (q.dir == 1 ? "BUY ✕ " : "SELL ✕ ") + str.tostring(q.entry, format.mintick) + " · SL " + str.tostring(q.sl, format.mintick) + " · TP " + str.tostring(q.tp, format.mintick) + (q.dir == 1 ? " (croix baissière ratée, Core haussier)" : " (croix haussière ratée, Core baissier)"), alert.freq_once_per_bar)
+if csNew and nz(csSDir) != 0
+    CxPlan q = f_csNew(csSDir, 1, csSlAtr, csTpR)
+    if csAlEntry
+        alert("CX Signal " + syminfo.ticker + " : " + (q.dir == 1 ? "BUY " : "SELL ") + str.tostring(q.entry, format.mintick) + " · SL " + str.tostring(q.sl, format.mintick) + " · TP " + str.tostring(q.tp, format.mintick) + (q.dir == 1 ? " (haut pris + Strong haussier)" : " (bas pris + Strong baissier)"), alert.freq_once_per_bar)
+
+// suivi TP / SL sur les bougies du graphique (même bougie touchant les deux : SL)
+if csOn and array.size(csPlansArr) > 0
+    for i = math.max(0, array.size(csPlansArr) - 10) to array.size(csPlansArr) - 1
+        CxPlan p = array.get(csPlansArr, i)
+        if p.status == 0 and time >= p.entryTime
+            if time >= p.endTime
+                p.status := 3
+                p.res    := (close[1] - p.entry) * p.dir / math.max(math.abs(p.entry - p.sl), syminfo.mintick)
+                p.endTime := time
+            else
+                bool hs = p.dir == 1 ? low <= p.sl : high >= p.sl
+                bool ht = p.dir == 1 ? high >= p.tp : low <= p.tp
+                if hs
+                    p.status  := 2
+                    p.res     := -1.0
+                    p.endTime := time_close
+                    if csAlSl
+                        alert("CX Signal " + syminfo.ticker + " : SL touché " + str.tostring(p.sl, format.mintick) + " (-1R)", alert.freq_once_per_bar)
+                else if ht
+                    p.status  := 1
+                    p.res     := p.tpR
+                    p.endTime := time_close
+                    if csAlTp
+                        alert("CX Signal " + syminfo.ticker + " : TP atteint " + str.tostring(p.tp, format.mintick) + " (+" + f_r1(p.tpR) + "R)", alert.freq_once_per_bar)
+
+// dessin des derniers plans (comme CX AVPT, épuré)
+var array<box>   csBoxes = array.new<box>()
+var array<line>  csLines = array.new<line>()
+var array<label> csLbls  = array.new<label>()
+
+if barstate.islast
+    for b in csBoxes
+        box.delete(b)
+    for l in csLines
+        line.delete(l)
+    for lb in csLbls
+        label.delete(lb)
+    array.clear(csBoxes)
+    array.clear(csLines)
+    array.clear(csLbls)
+    int tot = array.size(csPlansArr)
+    if csOn and tot > 0
+        int proj = time + 6 * (time_close - time)
+        if csPlans > 0
+            for i = math.max(0, tot - csPlans) to tot - 1
+                CxPlan p = array.get(csPlansArr, i)
+                int x1 = p.entryTime
+                int x2 = math.max(p.status == 0 ? math.max(proj, p.entryTime + csPer) : p.endTime, x1 + 1)
+                array.push(csBoxes, box.new(x1, math.max(p.entry, p.sl), x2, math.min(p.entry, p.sl), xloc = xloc.bar_time, border_color = color.new(csBear, 70), bgcolor = color.new(csBear, 90)))
+                array.push(csBoxes, box.new(x1, math.max(p.entry, p.tp), x2, math.min(p.entry, p.tp), xloc = xloc.bar_time, border_color = color.new(csBull, 70), bgcolor = color.new(csBull, 92)))
+                array.push(csLines, line.new(x1, p.entry, x2, p.entry, xloc = xloc.bar_time, color = color.new(chart.fg_color, 25)))
+                array.push(csLines, line.new(x1, p.sl, x2, p.sl, xloc = xloc.bar_time, color = color.new(csBear, 20)))
+                array.push(csLines, line.new(x1, p.tp, x2, p.tp, xloc = xloc.bar_time, color = color.new(csBull, 15)))
+                if i == tot - 1
+                    string fin = p.status == 3 ? "  FIN " + (p.res >= 0 ? "+" : "") + f_r1(p.res) + "R" : ""
+                    array.push(csLbls, label.new(x2, p.entry, "ENTRY  " + str.tostring(p.entry, format.mintick) + fin, xloc = xloc.bar_time, style = label.style_label_left, color = color.new(chart.bg_color, 20), textcolor = chart.fg_color, size = size.tiny, text_formatting = text.format_bold))
+                    array.push(csLbls, label.new(x2, p.sl, "SL  " + str.tostring(p.sl, format.mintick) + (p.status == 2 ? " ✗" : " (-1R)"), xloc = xloc.bar_time, style = label.style_label_left, color = color.new(csBear, p.status == 2 ? 20 : 82), textcolor = chart.fg_color, size = size.tiny, text_formatting = text.format_bold))
+                    array.push(csLbls, label.new(x2, p.tp, "TP  " + str.tostring(p.tp, format.mintick) + " (" + f_r1(p.tpR) + "R)" + (p.status == 1 ? " ✓" : ""), xloc = xloc.bar_time, style = label.style_label_left, color = color.new(csBull, p.status == 1 ? 20 : 84), textcolor = chart.fg_color, size = size.tiny, text_formatting = text.format_bold))
+        if csTags > 0
+            for i = math.max(0, tot - csTags) to tot - 1
+                CxPlan p = array.get(csPlansArr, i)
+                string st = p.status == 1 ? " ✓" : p.status == 2 ? " ✗" : p.status == 3 ? " " + (p.res >= 0 ? "+" : "") + f_r1(p.res) + "R" : ""
+                array.push(csLbls, label.new(p.entryTime - 1, p.sigY, (p.dir == 1 ? "BUY" : "SELL") + (p.kind == 2 ? " ✕" : "") + st, xloc = xloc.bar_time, style = p.dir == 1 ? label.style_label_up : label.style_label_down, color = color.new(p.dir == 1 ? csBull : csBear, i == tot - 1 ? 5 : 25), textcolor = #0B0E14, size = size.tiny, text_formatting = text.format_bold))
