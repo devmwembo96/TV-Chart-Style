@@ -14,7 +14,7 @@
 //| (Zeiierman) » : code d'origine protégé, calcul propre à CX.      |
 //+------------------------------------------------------------------+
 #property copyright   "CX Press"
-#property version     "1.00"
+#property version     "1.01"
 #property description "CX Pression Achat / Vente : force et direction de la tendance, Long / Short Covered, Pressure Cross, Pre Signals."
 #property indicator_separate_window
 #property indicator_buffers 32
@@ -411,7 +411,7 @@ void DrawTable(double core, double fast, bool strongUp, bool strongDn, bool estU
    color  tBg   = core > 0 ? ColBull : core < 0 ? ColBear : grey;
    string state = strongUp || strongDn ? "Strong · Stretched" : estUp || estDn ? "Trending" : MathAbs(core) < 60 ? "Ranging" : "Building";
    color  sBg   = strongUp || strongDn ? orange : estUp || estDn ? tBg : grey;
-   int w1 = 80, w2 = 120, x2 = 10, x1 = x2 + w2;
+   int w1 = 100, w2 = 160, x2 = 10, x1 = x2 + w2;
    //--- coin haut droit : la distance x va du bord droit du panneau au bord gauche de la cellule
    Cell("h1", x1 + w1, 4, w1, "Trend", blue, clrWhite);
    Cell("h2", x2 + w2, 4, w2, "Market State", blue, clrWhite);
