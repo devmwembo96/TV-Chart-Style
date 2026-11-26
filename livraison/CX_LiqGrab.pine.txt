@@ -1,6 +1,7 @@
 ﻿// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
 // Partie 10 : « Triad Frame Basic - Session and Key Levels » © TriadSignals (MPL 2.0), code d’origine.
 // Partie 11 : CX Signal (portage Pine de CX_Signal.mq5 1.10) : Strong de CX Press après prise de la carte + croix ratée.
+// Partie 12 : Range Breaker (partie « Range Breaker » de « Range Breaker + LGD CSD », code d’origine).
 // CX – Liquidity Grab (SFP) · FVG · MSS/BOS
 // Écriture originale inspirée du principe « ICT Liquidity Grab + FVG + MSS/BOS » :
 //   1. un SFP (prise de liquidité au-dessus / au-dessous d'un swing, clôture revenue dedans)
@@ -1001,3 +1002,147 @@ if barstate.islast
                 CxPlan p = array.get(csPlansArr, i)
                 string st = p.status == 1 ? " ✓" : p.status == 2 ? " ✗" : p.status == 3 ? " " + (p.res >= 0 ? "+" : "") + f_r1(p.res) + "R" : ""
                 array.push(csLbls, label.new(p.entryTime - 1, p.sigY, (p.dir == 1 ? "BUY" : "SELL") + (p.kind == 2 ? " ✕" : "") + st, xloc = xloc.bar_time, style = p.dir == 1 ? label.style_label_up : label.style_label_down, color = color.new(p.dir == 1 ? csBull : csBear, i == tot - 1 ? 5 : 25), textcolor = #0B0E14, size = size.tiny, text_formatting = text.format_bold))
+
+// ============================================================================
+// 12. RANGE BREAKER (partie « Range Breaker » de « Range Breaker + LGD CSD », code d'origine,
+//     variables préfixées rb pour cohabiter avec le reste de l'indicateur)
+//     Ranges de compression (ATR), boîte dynamique, Breakout / Vol Break, Wick Rev
+// ============================================================================
+string rbGrpR    = "12. Range Breaker"
+bool   rbUse     = input.bool(true, "Activer Range Breaker", group = rbGrpR)
+color  rbBullCol = input.color(#089981, "Couleur haussière", group = rbGrpR)
+color  rbBearCol = input.color(#F23645, "Couleur baissière", group = rbGrpR)
+string rbLblSize = input.string(size.small, "Taille des étiquettes", options = [size.tiny, size.small, size.normal], group = rbGrpR)
+bool   rbAlerts  = input.bool(true, "Alertes (à la clôture de bougie)", group = rbGrpR)
+string rbPreset  = input.string("Normal", "Préréglage", options = ["Tight", "Normal", "Swing", "Options", "Custom"], group = rbGrpR)
+int    rbCLen    = input.int(20, "Custom : longueur du range", minval = 3, group = rbGrpR)
+int    rbCAtr    = input.int(50, "Custom : longueur ATR", minval = 1, group = rbGrpR)
+float  rbCThr    = input.float(2.5, "Custom : seuil (× ATR)", minval = 0.1, step = 0.1, group = rbGrpR)
+float  rbCBuf    = input.float(0.15, "Custom : tampon de cassure (× ATR)", minval = 0.0, step = 0.05, group = rbGrpR)
+float  rbExpMax  = input.float(1.75, "Élargissement maximal (× seuil)", minval = 1.0, step = 0.05, group = rbGrpR)
+float  rbWickMin = input.float(0.5, "Mèche de rejet minimale", minval = 0.0, maxval = 1.0, step = 0.05, group = rbGrpR)
+bool   rbOnClose = input.bool(true, "Signaux validés à la clôture", group = rbGrpR)
+bool   rbVolFilt = input.bool(false, "Cassures confirmées par pic de volume", group = rbGrpR)
+float  rbVolMult = input.float(1.7, "Pic de volume : × moyenne", minval = 0.1, step = 0.1, group = rbGrpR)
+int    rbVolLen  = input.int(20, "Longueur moyenne de volume", minval = 1, group = rbGrpR)
+bool   rbShowBox = input.bool(true, "Afficher les boîtes", group = rbGrpR)
+bool   rbShowMid = input.bool(true, "Afficher le milieu", group = rbGrpR)
+bool   rbColBrk  = input.bool(true, "Colorer la boîte cassée", group = rbGrpR)
+color  rbBoxCol  = input.color(#2962FF, "Couleur de la boîte", group = rbGrpR)
+color  rbMidCol  = input.color(#787B86, "Couleur du milieu", group = rbGrpR)
+bool   rbShowBrk = input.bool(true, "Afficher Breakout / Vol Break", group = rbGrpR)
+bool   rbShowWick = input.bool(true, "Afficher Wick Rev", group = rbGrpR)
+
+int   rbLen = rbPreset == "Tight" ? 12 : rbPreset == "Normal" ? 20 : rbPreset == "Swing" ? 30 : rbPreset == "Options" ? 50 : rbCLen
+int   rbAtrLen = rbPreset == "Tight" ? 30 : rbPreset == "Normal" ? 50 : rbPreset == "Swing" ? 100 : rbPreset == "Options" ? 100 : rbCAtr
+float rbThr = rbPreset == "Tight" ? 2.0 : rbPreset == "Normal" ? 2.5 : rbPreset == "Swing" ? 3.5 : rbPreset == "Options" ? 4.5 : rbCThr
+float rbBuf = rbPreset == "Tight" ? 0.10 : rbPreset == "Normal" ? 0.15 : rbPreset == "Swing" ? 0.25 : rbPreset == "Options" ? 0.30 : rbCBuf
+
+float rbAtr      = ta.atr(rbAtrLen)
+float rbHh       = ta.highest(high, rbLen)
+float rbLl       = ta.lowest(low, rbLen)
+float rbVolAvg   = ta.sma(volume, rbVolLen)[1]
+bool  rbVolSpike = not na(rbVolAvg) and rbVolAvg > 0 and volume > rbVolAvg * rbVolMult
+bool  rbAct      = not rbOnClose or barstate.isconfirmed
+
+rbUpdateRange(box b, line m, float tp, float bt, int x) =>
+    float mid = (tp + bt) / 2
+    if not na(b)
+        box.set_top(b, tp)
+        box.set_bottom(b, bt)
+        box.set_right(b, x)
+    if not na(m)
+        line.set_y1(m, mid)
+        line.set_y2(m, mid)
+        line.set_x2(m, x)
+
+var bool  rbActive = false
+var float rbTop    = na
+var float rbBot    = na
+var int   rbPUp    = na
+var int   rbPDn    = na
+var int   rbEndBar = -1
+var box   rbBox    = na
+var line  rbMid    = na
+
+if rbUse and bar_index > 0 and not na(rbAtr)
+    if not rbActive
+        if rbAct and bar_index >= rbLen - 1 and bar_index - rbLen + 1 > rbEndBar and (rbHh - rbLl) < rbAtr * rbThr
+            rbActive := true
+            rbTop := rbHh
+            rbBot := rbLl
+            rbPUp := na
+            rbPDn := na
+            int left = bar_index - rbLen + 1
+            rbBox := rbShowBox ? box.new(left, rbHh, bar_index, rbLl, border_color = color.new(rbBoxCol, 40), bgcolor = color.new(rbBoxCol, 88)) : na
+            rbMid := rbShowMid ? line.new(left, (rbHh + rbLl) / 2, bar_index, (rbHh + rbLl) / 2, color = rbMidCol, style = line.style_dashed) : na
+            if rbAlerts
+                alert("Range détecté " + str.tostring(rbLl, format.mintick) + " - " + str.tostring(rbHh, format.mintick), alert.freq_once_per_bar_close)
+    else if not rbAct
+        rbUpdateRange(rbBox, rbMid, rbTop, rbBot, bar_index)
+    else
+        float bf = rbAtr * rbBuf
+        int brk = close > rbTop + bf ? 1 : close < rbBot - bf ? -1 : 0
+        if brk != 0
+            if rbShowBrk and (not rbVolFilt or rbVolSpike)
+                label.new(bar_index, brk > 0 ? low : high, rbVolSpike ? "Vol Break" : "Breakout", style = brk > 0 ? label.style_label_up : label.style_label_down, color = brk > 0 ? rbBullCol : rbBearCol, textcolor = color.white, size = rbLblSize)
+            rbUpdateRange(rbBox, rbMid, rbTop, rbBot, bar_index)
+            if rbColBrk and not na(rbBox)
+                color bc = brk > 0 ? rbBullCol : rbBearCol
+                box.set_bgcolor(rbBox, color.new(bc, 88))
+                box.set_border_color(rbBox, color.new(bc, 40))
+            if rbAlerts
+                alert((brk > 0 ? "Cassure haussière" : "Cassure baissière") + (rbVolSpike ? " avec volume" : "") + " du range", alert.freq_once_per_bar_close)
+            rbActive := false
+            rbEndBar := bar_index
+            rbPUp := na
+            rbPDn := na
+        else
+            float nTop = rbTop
+            float nBot = rbBot
+            // Mèche de rejet de la bougie précédente : confirmée si la bougie repart vers le milieu
+            if rbPUp == bar_index - 1
+                if close < open and close < close[1]
+                    if rbShowWick
+                        label.new(bar_index, high, "Wick Rev", style = label.style_label_down, color = color.new(rbBearCol, 30), textcolor = color.white, size = rbLblSize)
+                    if rbAlerts
+                        alert("Retournement baissier sur mèche", alert.freq_once_per_bar_close)
+                else
+                    nTop := math.max(nTop, high[1])
+            if rbPDn == bar_index - 1
+                if close > open and close > close[1]
+                    if rbShowWick
+                        label.new(bar_index, low, "Wick Rev", style = label.style_label_up, color = color.new(rbBullCol, 30), textcolor = color.white, size = rbLblSize)
+                    if rbAlerts
+                        alert("Retournement haussier sur mèche", alert.freq_once_per_bar_close)
+                else
+                    nBot := math.min(nBot, low[1])
+            rbPUp := na
+            rbPDn := na
+            // Poussée contre un bord sans élan : la boîte s'élargit (sauf mèche de rejet en attente)
+            bool upP = high > rbTop
+            bool dnP = low < rbBot
+            float rng = high - low
+            if upP
+                bool rej = not dnP and close <= rbTop and rng > 0 and high - math.max(open, close) >= rbWickMin * rng
+                if rej
+                    rbPUp := bar_index
+                else
+                    nTop := math.max(nTop, high)
+            if dnP
+                bool rej = not upP and close >= rbBot and rng > 0 and math.min(open, close) - low >= rbWickMin * rng
+                if rej
+                    rbPDn := bar_index
+                else
+                    nBot := math.min(nBot, low)
+            // Élargissement trop grand : le range se dissout sans signal
+            if nTop - nBot > rbAtr * rbThr * rbExpMax
+                rbUpdateRange(rbBox, rbMid, rbTop, rbBot, bar_index)
+                rbActive := false
+                rbEndBar := bar_index
+                rbPUp := na
+                rbPDn := na
+            else
+                rbTop := nTop
+                rbBot := nBot
+                rbUpdateRange(rbBox, rbMid, rbTop, rbBot, bar_index)
